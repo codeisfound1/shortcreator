@@ -388,8 +388,8 @@ class VideoCreator:
                 current_word = ""
                 for timing in word_timings:
                     if timing["start"] <= current_time <= timing["start"] + timing["duration"]:
-                    current_word = timing["word"]
-                    break
+                        current_word = timing["word"]
+                        break
 
                 try:
                     frame = self._generate_caption_frame(caption, current_word, img)
@@ -397,14 +397,13 @@ class VideoCreator:
                         raise ValueError("Frame is None")
                     frames.append(frame)
                 except Exception as e:
-                logger.error(f"Frame {frame_idx} failed: {str(e)}")
-                # Fallback: use plain image without caption
-                frames.append(np.array(img.convert("RGB")))
+                    logger.error(f"Frame {frame_idx} failed: {str(e)}")
+                    # Fallback: use plain image without caption
+                    frames.append(np.array(img.convert("RGB")))
 
             if not frames:
                 logger.error("No frames generated")
-            return None
-
+                return None
             logger.info(f"Generated {len(frames)} frames successfully")
 
             # Create video from frames
