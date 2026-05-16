@@ -38,7 +38,7 @@ def get_env_json(key: str, default: str = "{}") -> dict:
 class Config:
     # Telegram
     TELEGRAM_TOKEN: str
-    TELEGRAM_CHANNELS: List[str]
+    TELEGRAM_CHANNELS=["@TechTalk66"] #TELEGRAM_CHANNELS: List[str]
     
     # YouTube
     YOUTUBE_CLIENT_SECRETS: dict
