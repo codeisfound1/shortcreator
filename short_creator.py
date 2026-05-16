@@ -162,6 +162,8 @@ class VideoCreator:
 
     def _generate_caption_images(self, text: str, img_size: tuple) -> List[Image.Image]:
         try:
+            # Encode text to handle unicode
+            text = text.encode('utf-8').decode('utf-8')
             # Try to use custom font, fallback to bundled
             custom_font = Path(self.config.FONT_PATH)
             if custom_font.exists():
