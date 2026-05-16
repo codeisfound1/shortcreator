@@ -115,130 +115,136 @@ class VideoCreator:
             return Path(self.music_cache / "default.mp3")
 
     def create_short(self, image_url: str, caption: str) -> Optional[Path]:
-        try:
-            # Download and process image
-            img_data = requests.get(image_url).content
-            img_path = Path("temp_image.jpg")
-            img_path.write_bytes(img_data)
-            img = Image.open(img_path).resize(self.config.OUTPUT_RESOLUTION)
-            
-            # Create caption images
-            caption_images = self._generate_caption_images(caption, img.size)
-            
-            # Create video clips
-            image_clip = mp.ImageClip(np.array(img), duration=self.config.DURATION)
-            caption_clips = []
-            for i, img in enumerate(caption_images):
-                caption_clips.append(mp.ImageClip(np.array(img), duration=0.05))
-            video = mp.concatenate_videoclips([image_clip] + caption_clips)
-            
-            # Add music
-            if self.config.MUSIC_OPTION:
-                if self.config.MUSIC_OPTION.startswith("http"):
-                    music_path = self.download_music(self.config.MUSIC_OPTION)
-                else:
-                    music_path = Path(self.config.MUSIC_OPTION)
-                
-                audio = mp.AudioFileClip(str(music_path))
-                audio = audio.volumex(0.8)
-                video = video.set_audio(audio)
-            
-            # Save video
-            output_path = Path("output_short.mp4")
-            video.write_videofile(
-                str(output_path),
-                fps=24,
-                codec='libx264',
-                audio_codec='aac',
-                logger="bar"  # MoviePy's built-in progress bar, or None to silence
-            )
-            return output_path
-        except Exception as e:
-            logger.error(f"Video creation failed: {str(e)}")
-            return None
-        finally:
-            if img_path.exists():
-                img_path.unlink()
-
-    def _generate_caption_images(self, text: str, img_size: tuple) -> List[Image.Image]:
-        try:
-            # Encode text to handle unicode
-            text = text.encode('utf-8').decode('utf-8')
-            # Try fonts in order until one works
-            font = None
-            font_paths = [
-                Path(self.config.FONT_PATH),
-                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),      # Linux
-                Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),  # Linux
-                Path("/System/Library/Fonts/Helvetica.ttc"),                   # Mac
-                Path("C:/Windows/Fonts/arial.ttf"),                            # Windows
-                self.fonts_dir / "DejaVuSans.ttf",
-            ]
+    img_path = Path("temp_image.jpg")
+    try:
+        # Download and process image
+        img_data = requests.get(image_url).content
+        img_path.write_bytes(img_data)
+        img = Image.open(img_path)
         
-            for path in font_paths:
-                if path.exists():
-                    try:
-                        font = ImageFont.truetype(str(path), 48)
-                        logger.info(f"Using font: {path}")
-                        break
-                    except:
-                        continue
+        # Crop/fill to exact short resolution
+        img = self._fit_image(img, self.config.OUTPUT_RESOLUTION)
         
-            if font is None:
-                logger.warning("No Unicode font found, downloading DejaVuSans")
-                font_url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
-                font_data = requests.get(font_url).content
-                font_save_path = self.fonts_dir / "DejaVuSans.ttf"
-                font_save_path.write_bytes(font_data)
-                font = ImageFont.truetype(str(font_save_path), 48)
-
-            # Split text into lines
-            words = text.split(" ")
-            lines = []
-            test_line = ""
+        # Create caption overlay
+        caption_overlay = self._generate_caption_overlay(caption, img.size)
+        if caption_overlay:
+            img = Image.alpha_composite(img.convert("RGBA"), caption_overlay)
+        
+        # Create video clip
+        video = mp.ImageClip(np.array(img.convert("RGB")), duration=self.config.DURATION)
+        video = video.fadein(0.5).fadeout(0.5)
+        
+        # Add music
+        if self.config.MUSIC_OPTION:
+            if self.config.MUSIC_OPTION.startswith("http"):
+                music_path = self.download_music(self.config.MUSIC_OPTION)
+            else:
+                music_path = Path(self.config.MUSIC_OPTION)
             
-            for word in words:
-                test_line += f"{word} "
-                if font.getlength(test_line.strip()) <= img_size[0] * 0.9:
-                    continue
-                else:
-                    lines.append(test_line.strip())
-                    test_line = ""
+            audio = mp.AudioFileClip(str(music_path))
             
-            if test_line:
-                lines.append(test_line.strip())
+            # Loop music if shorter than video, trim if longer
+            if audio.duration < self.config.DURATION:
+                loops = int(self.config.DURATION / audio.duration) + 1
+                audio = mp.concatenate_audioclips([audio] * loops)
+            audio = audio.subclip(0, self.config.DURATION)
+            
+            # Fade in/out audio
+            audio = audio.audio_fadein(1.0).audio_fadeout(1.5)
+            audio = audio.volumex(0.8)
+            video = video.set_audio(audio)
+        
+        # Save video
+        output_path = Path("output_short.mp4")
+        video.write_videofile(
+            str(output_path),
+            fps=24,
+            codec='libx264',
+            audio_codec='aac',
+            logger="bar"
+        )
+        return output_path
+    except Exception as e:
+        logger.error(f"Video creation failed: {str(e)}")
+        return None
+    finally:
+        if img_path.exists():
+            img_path.unlink()
+    
+    def _fit_image(self, img: Image.Image, target_size: tuple) -> Image.Image:
+        """Crop and resize image to exactly fill target size (like CSS cover)"""
+        target_w, target_h = target_size
+        orig_w, orig_h = img.size
+    
+    # Calculate scale to fill target completely
+    scale = max(target_w / orig_w, target_h / orig_h)
+    new_w = int(orig_w * scale)
+    new_h = int(orig_h * scale)
+    
+    # Resize
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    
+    # Center crop
+    left = (new_w - target_w) // 2
+    top = (new_h - target_h) // 2
+    img = img.crop((left, top, left + target_w, top + target_h))
+    
+    return img
+    
+    def _generate_caption_overlay(self, text: str, img_size: tuple) -> Optional[Image.Image]:
+        """Generate a single overlay image with full caption instead of per-line clips"""
+    try:
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        font = ImageFont.truetype(font_path, 52)
+        font_small = ImageFont.truetype(font_path, 52)
 
-            # Create caption images with fade effect
-            caption_imgs = []
-            for i, line in enumerate(lines):
-                img = Image.new("RGBA", img_size, (0, 0, 0, 0))
-                draw = ImageDraw.Draw(img)
-                
-                # Background rectangle
-                #text_width, text_height = draw.textsize(line, font=font)
-                bbox = draw.textbbox((0, 0), line, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-                padding = 20
-                draw.rectangle(
-                    (padding, img_size[1] - text_height - padding - 40, 
-                     img_size[0] - padding, img_size[1] - padding - 20),
-                    fill=(0, 0, 0, 200)
-                )
-                
-                # Text with opacity
-                draw.text(
-                    (img_size[0]/2, img_size[1] - text_height - 40 - 20),
-                    line,
-                    font=font,
-                    fill=(255, 255, 255, min(255, (i + 1) * 60)),
-                    anchor="md"
-                )
-                caption_imgs.append(img)
-            return caption_imgs
-        except Exception as e:
-            logger.error(f"Caption generation failed: {str(e)}")
-            return []
+        overlay = Image.new("RGBA", img_size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # Word wrap
+        words = text.split()
+        lines = []
+        current_line = ""
+        for word in words:
+            test = f"{current_line} {word}".strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] <= img_size[0] * 0.85:
+                current_line = test
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+        if current_line:
+            lines.append(current_line)
+
+        # Measure total text block
+        line_height = draw.textbbox((0, 0), "A", font=font)[3] + 10
+        total_height = line_height * len(lines)
+        padding = 24
+        block_top = img_size[1] - total_height - padding * 3
+        block_bottom = img_size[1] - padding
+
+        # Draw semi-transparent background
+        draw.rectangle(
+            (padding, block_top, img_size[0] - padding, block_bottom),
+            fill=(0, 0, 0, 180)
+        )
+
+        # Draw each line centered
+        for i, line in enumerate(lines):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_w = bbox[2] - bbox[0]
+            x = (img_size[0] - text_w) // 2
+            y = block_top + padding + i * line_height
+            # Shadow
+            draw.text((x + 2, y + 2), line, font=font, fill=(0, 0, 0, 200))
+            # Text
+            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+
+        return overlay
+    except Exception as e:
+        logger.error(f"Caption generation failed: {str(e)}")
+        return None
 
 class YouTubeUploader:
     def __init__(self, credentials: dict):
