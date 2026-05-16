@@ -194,57 +194,57 @@ class VideoCreator:
     def _generate_caption_overlay(self, text: str, img_size: tuple) -> Optional[Image.Image]:
         """Generate a single overlay image with full caption instead of per-line clips"""
         try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        font = ImageFont.truetype(font_path, 52)
-        font_small = ImageFont.truetype(font_path, 52)
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            font = ImageFont.truetype(font_path, 52)
+            font_small = ImageFont.truetype(font_path, 52)
 
-        overlay = Image.new("RGBA", img_size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
+            overlay = Image.new("RGBA", img_size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
 
-        # Word wrap
-        words = text.split()
-        lines = []
-        current_line = ""
-        for word in words:
-            test = f"{current_line} {word}".strip()
-            bbox = draw.textbbox((0, 0), test, font=font)
-            if bbox[2] - bbox[0] <= img_size[0] * 0.85:
-                current_line = test
-            else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = word
-        if current_line:
-            lines.append(current_line)
+            # Word wrap
+            words = text.split()
+            lines = []
+            current_line = ""
+            for word in words:
+                test = f"{current_line} {word}".strip()
+                bbox = draw.textbbox((0, 0), test, font=font)
+                if bbox[2] - bbox[0] <= img_size[0] * 0.85:
+                    current_line = test
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
 
-        # Measure total text block
-        line_height = draw.textbbox((0, 0), "A", font=font)[3] + 10
-        total_height = line_height * len(lines)
-        padding = 24
-        block_top = img_size[1] - total_height - padding * 3
-        block_bottom = img_size[1] - padding
+            # Measure total text block
+            line_height = draw.textbbox((0, 0), "A", font=font)[3] + 10
+            total_height = line_height * len(lines)
+            padding = 24
+            block_top = img_size[1] - total_height - padding * 3
+            block_bottom = img_size[1] - padding
 
-        # Draw semi-transparent background
-        draw.rectangle(
-            (padding, block_top, img_size[0] - padding, block_bottom),
-            fill=(0, 0, 0, 180)
-        )
+            # Draw semi-transparent background
+            draw.rectangle(
+                (padding, block_top, img_size[0] - padding, block_bottom),
+                fill=(0, 0, 0, 180)
+            )
 
-        # Draw each line centered
-        for i, line in enumerate(lines):
-            bbox = draw.textbbox((0, 0), line, font=font)
-            text_w = bbox[2] - bbox[0]
-            x = (img_size[0] - text_w) // 2
-            y = block_top + padding + i * line_height
-            # Shadow
-            draw.text((x + 2, y + 2), line, font=font, fill=(0, 0, 0, 200))
-            # Text
-            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+            # Draw each line centered
+            for i, line in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line, font=font)
+                text_w = bbox[2] - bbox[0]
+                x = (img_size[0] - text_w) // 2
+                y = block_top + padding + i * line_height
+                # Shadow
+                draw.text((x + 2, y + 2), line, font=font, fill=(0, 0, 0, 200))
+                # Text
+                draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
-        return overlay
-    except Exception as e:
-        logger.error(f"Caption generation failed: {str(e)}")
-        return None
+            return overlay
+        except Exception as e:
+            logger.error(f"Caption generation failed: {str(e)}")
+            return None
 
 class YouTubeUploader:
     def __init__(self, credentials: dict):
