@@ -59,7 +59,7 @@ class TelegramClient:
         self.base_url = f"https://api.telegram.org/bot{token}/"
         self.session = requests.Session()
 
-    def get_latest_image(self, channel: str) -> Optional[Tuple[str, str]]:
+def get_latest_image(self, channel: str) -> Optional[Tuple[str, str]]:
     try:
         url = f"{self.base_url}getUpdates?allowed_updates=[\"channel_post\",\"message\"]"
         updates = self.session.get(url).json()
