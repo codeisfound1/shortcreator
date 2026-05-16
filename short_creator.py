@@ -189,70 +189,143 @@ class VideoCreator:
 
 
     def _generate_caption_frame(self, text: str, highlight_word: str, img: Image.Image) -> np.ndarray:
-        """Generate a single frame with the current spoken word highlighted in yellow"""
-        frame = img.copy().convert("RGBA")
-        overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
+    frame = img.copy().convert("RGBA")
+    overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
-        font = ImageFont.truetype(self.config.FONT_PATH, 52)
-        font_bold = ImageFont.truetype(self.config.FONT_BOLD_PATH, 56)
+    font = ImageFont.truetype(self.config.FONT_PATH, 52)
+    font_bold = ImageFont.truetype(self.config.FONT_BOLD_PATH, 62)
+    
+    # Emoji font fallback
+    emoji_font_paths = [
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf",
+    ]
+    emoji_font = None
+    for path in emoji_font_paths:
+        if Path(path).exists():
+            try:
+                emoji_font = ImageFont.truetype(path, 109)  # NotoColorEmoji needs size 109
+                logger.info(f"Emoji font loaded: {path}")
+                break
+            except Exception:
+                continue
+    if not emoji_font:
+        logger.warning("Emoji font not found, emojis may not render")
 
-        words = text.split()
-        img_w, img_h = frame.size
-        padding = 24
-        line_height = 65
-        max_width = img_w * 0.85
-
-        # Word wrap into lines
-        lines = []
-        current_line = []
-        current_width = 0
-        for word in words:
-            bbox = draw.textbbox((0, 0), word + " ", font=font)
-            word_w = bbox[2] - bbox[0]
-            if current_width + word_w > max_width and current_line:
-                lines.append(current_line)
-                current_line = [word]
-                current_width = word_w
-            else:
-                current_line.append(word)
-                current_width += word_w
-        if current_line:
-            lines.append(current_line)
-
-        total_height = line_height * len(lines) + padding * 2
-        block_top = img_h - total_height - padding
-        block_bottom = img_h - padding
-
-        # Semi-transparent background
-        draw.rectangle(
-            (padding, block_top, img_w - padding, block_bottom),
-            fill=(0, 0, 0, 180)
+    def is_emoji(char: str) -> bool:
+        cp = ord(char)
+        return (
+            0x1F300 <= cp <= 0x1FABF or  # misc symbols, emoticons
+            0x1F600 <= cp <= 0x1F64F or  # emoticons
+            0x1F680 <= cp <= 0x1F6FF or  # transport
+            0x2600  <= cp <= 0x26FF  or  # misc symbols
+            0x2700  <= cp <= 0x27BF  or  # dingbats
+            0xFE00  <= cp <= 0xFE0F  or  # variation selectors
+            0x1F900 <= cp <= 0x1F9FF or  # supplemental symbols
+            0x1FA00 <= cp <= 0x1FA6F or  # chess symbols
+            cp == 0x200D               or  # zero width joiner
+            0x1F1E0 <= cp <= 0x1F1FF     # flags
         )
 
-        # Draw words with highlight on current spoken word
-        for line_idx, line_words in enumerate(lines):
-            line_text = " ".join(line_words)
-            line_bbox = draw.textbbox((0, 0), line_text, font=font)
-            line_w = line_bbox[2] - line_bbox[0]
-            x = (img_w - line_w) // 2
-            y = block_top + padding + line_idx * line_height
+    def draw_word_with_emoji(draw, x, y, word, font, color):
+        """Draw word char by char, switching to emoji font when needed"""
+        cursor_x = x
+        i = 0
+        while i < len(word):
+            char = word[i]
+            # Handle multi-char emoji sequences (e.g. flags, ZWJ sequences)
+            seq = char
+            while i + len(seq) < len(word) and (
+                is_emoji(word[i + len(seq)]) or ord(word[i + len(seq)]) == 0x200D
+            ):
+                seq += word[i + len(seq)]
+            
+            if is_emoji(char) and emoji_font:
+                # Draw emoji
+                draw.text((cursor_x, y - 10), seq, font=emoji_font, embedded_color=True)
+                bbox = emoji_font.getbbox(seq)
+                cursor_x += (bbox[2] - bbox[0]) + 4
+                i += len(seq)
+            else:
+                draw.text((cursor_x + 2, y + 2), char, font=font, fill=(0, 0, 0, 180))  # shadow
+                draw.text((cursor_x, y), char, font=font, fill=color)
+                bbox = font.getbbox(char)
+                cursor_x += (bbox[2] - bbox[0])
+                i += 1
+        return cursor_x
 
-            for word in line_words:
-                is_highlight = word.lower().strip(".,!?") == highlight_word.lower().strip(".,!?")
-                current_font = font_bold if is_highlight else font
-                color = (255, 255, 0, 255) if is_highlight else (255, 255, 255, 255)
+    def measure_word(word, font):
+        """Measure word width accounting for emojis"""
+        width = 0
+        for char in word:
+            if is_emoji(char) and emoji_font:
+                bbox = emoji_font.getbbox(char)
+                width += (bbox[2] - bbox[0]) + 4
+            else:
+                bbox = font.getbbox(char)
+                width += (bbox[2] - bbox[0])
+        return width
 
-                # Shadow
-                draw.text((x + 2, y + 2), word, font=current_font, fill=(0, 0, 0, 200))
-                # Word
-                draw.text((x, y), word, font=current_font, fill=color)
+    words = text.split()
+    img_w, img_h = frame.size
+    padding = 24
+    line_height = 75
+    max_width = img_w * 0.85
 
-                bbox = draw.textbbox((0, 0), word + " ", font=current_font)
-                x += bbox[2] - bbox[0]
+    # Word wrap
+    lines = []
+    current_line = []
+    current_width = 0
+    for word in words:
+        word_w = measure_word(word + " ", font)
+        if current_width + word_w > max_width and current_line:
+            lines.append(current_line)
+            current_line = [word]
+            current_width = word_w
+        else:
+            current_line.append(word)
+            current_width += word_w
+    if current_line:
+        lines.append(current_line)
 
-        result = Image.alpha_composite(frame, overlay)
-        return np.array(result.convert("RGB"))
+    total_height = line_height * len(lines) + padding * 2
+    block_top = img_h - total_height - padding * 2
+    block_bottom = img_h - padding
+
+    # Background
+    draw.rectangle(
+        (padding, block_top, img_w - padding, block_bottom),
+        fill=(0, 0, 0, 200)
+    )
+
+    # Draw words
+    for line_idx, line_words in enumerate(lines):
+        # Measure full line width for centering
+        line_w = sum(measure_word(w + " ", font) for w in line_words)
+        x = (img_w - line_w) // 2
+        y = block_top + padding + line_idx * line_height
+
+        for word in line_words:
+            clean_word = word.lower().strip(".,!?:;\"'")
+            clean_highlight = highlight_word.lower().strip(".,!?:;\"'")
+            is_highlight = clean_word == clean_highlight and highlight_word != ""
+
+            current_font = font_bold if is_highlight else font
+
+            if is_highlight:
+                wb = (x - 4, y - 2, x + measure_word(word, current_font) + 4, y + line_height - 10)
+                draw.rectangle(wb, fill=(255, 200, 0, 220))
+                color = (0, 0, 0, 255)
+            else:
+                color = (255, 255, 255, 255)
+
+            next_x = draw_word_with_emoji(draw, x, y, word, current_font, color)
+            x = next_x + measure_word(" ", font)
+
+    result = Image.alpha_composite(frame, overlay)
+    return np.array(result.convert("RGB"))
 
     async def create_short(self, image_url: str, caption: str) -> Optional[Path]:
         img_path = Path("temp_image.jpg")
