@@ -117,59 +117,59 @@ class VideoCreator:
     def create_short(self, image_url: str, caption: str) -> Optional[Path]:
         img_path = Path("temp_image.jpg")
         try:
-        # Download and process image
-        img_data = requests.get(image_url).content
-        img_path.write_bytes(img_data)
-        img = Image.open(img_path)
+            # Download and process image
+            img_data = requests.get(image_url).content
+            img_path.write_bytes(img_data)
+            img = Image.open(img_path)
         
-        # Crop/fill to exact short resolution
-        img = self._fit_image(img, self.config.OUTPUT_RESOLUTION)
+            # Crop/fill to exact short resolution
+            img = self._fit_image(img, self.config.OUTPUT_RESOLUTION)
         
-        # Create caption overlay
-        caption_overlay = self._generate_caption_overlay(caption, img.size)
-        if caption_overlay:
-            img = Image.alpha_composite(img.convert("RGBA"), caption_overlay)
+            # Create caption overlay
+            caption_overlay = self._generate_caption_overlay(caption, img.size)
+            if caption_overlay:
+                img = Image.alpha_composite(img.convert("RGBA"), caption_overlay)
         
-        # Create video clip
-        video = mp.ImageClip(np.array(img.convert("RGB")), duration=self.config.DURATION)
-        video = video.fadein(0.5).fadeout(0.5)
+            # Create video clip
+            video = mp.ImageClip(np.array(img.convert("RGB")), duration=self.config.DURATION)
+            video = video.fadein(0.5).fadeout(0.5)
         
-        # Add music
-        if self.config.MUSIC_OPTION:
-            if self.config.MUSIC_OPTION.startswith("http"):
-                music_path = self.download_music(self.config.MUSIC_OPTION)
-            else:
-                music_path = Path(self.config.MUSIC_OPTION)
+            # Add music
+            if self.config.MUSIC_OPTION:
+                if self.config.MUSIC_OPTION.startswith("http"):
+                    music_path = self.download_music(self.config.MUSIC_OPTION)
+                else:
+                    music_path = Path(self.config.MUSIC_OPTION)
             
-            audio = mp.AudioFileClip(str(music_path))
+                audio = mp.AudioFileClip(str(music_path))
             
-            # Loop music if shorter than video, trim if longer
-            if audio.duration < self.config.DURATION:
-                loops = int(self.config.DURATION / audio.duration) + 1
-                audio = mp.concatenate_audioclips([audio] * loops)
-            audio = audio.subclip(0, self.config.DURATION)
+                # Loop music if shorter than video, trim if longer
+                if audio.duration < self.config.DURATION:
+                    loops = int(self.config.DURATION / audio.duration) + 1
+                    audio = mp.concatenate_audioclips([audio] * loops)
+                audio = audio.subclip(0, self.config.DURATION)
             
-            # Fade in/out audio
-            audio = audio.audio_fadein(1.0).audio_fadeout(1.5)
-            audio = audio.volumex(0.8)
-            video = video.set_audio(audio)
+                # Fade in/out audio
+                audio = audio.audio_fadein(1.0).audio_fadeout(1.5)
+                audio = audio.volumex(0.8)
+                video = video.set_audio(audio)
         
-        # Save video
-        output_path = Path("output_short.mp4")
-        video.write_videofile(
-            str(output_path),
-            fps=24,
-            codec='libx264',
-            audio_codec='aac',
-            logger="bar"
-        )
-        return output_path
-    except Exception as e:
-        logger.error(f"Video creation failed: {str(e)}")
-        return None
-    finally:
-        if img_path.exists():
-            img_path.unlink()
+            # Save video
+            output_path = Path("output_short.mp4")
+            video.write_videofile(
+                str(output_path),
+                fps=24,
+                codec='libx264',
+                audio_codec='aac',
+                logger="bar"
+            )
+            return output_path
+        except Exception as e:
+            logger.error(f"Video creation failed: {str(e)}")
+            return None
+        finally:
+            if img_path.exists():
+                img_path.unlink()
     
     def _fit_image(self, img: Image.Image, target_size: tuple) -> Image.Image:
         """Crop and resize image to exactly fill target size (like CSS cover)"""
