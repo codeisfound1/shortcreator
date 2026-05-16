@@ -36,7 +36,7 @@ class Config:
     
     # Content
     DURATION: int = 15  # seconds
-    MUSIC_OPTION: str = "https://example.com/music.mp3"  # URL or "bundled"
+    MUSIC_OPTION: str = "https://api.ttok.com/api/proxy?url=https%3A%2F%2Fcdn.pixabay.com%2Fdownload%2Faudio%2F2026%2F03%2F24%2Faudio_b3f7aa2696.mp3%3Ffilename%3Dthe_mountain-cheerful-cheerful-music-507997.mp3"  # URL or "bundled"
     FONT_PATH: str = "Arial.ttf"
     OUTPUT_RESOLUTION: Tuple[int, int] = (1080, 1920)  # 9:16 aspect ratio
 
