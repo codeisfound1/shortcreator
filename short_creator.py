@@ -161,11 +161,32 @@ class VideoCreator:
                             "duration": chunk["duration"] / 10_000_000
                         })
 
-            logger.info(f"TTS generated with {len(word_timings)} word timings")
+            # Get real TTS duration from the generated file
+            raw_audio = mp.AudioFileClip(str(tts_path))
+            real_duration = raw_audio.duration
+            raw_audio.close()
+            logger.info(f"TTS real duration: {real_duration:.2f}s")
+
+            # Vietnamese doesn't fire WordBoundary — build even-split from real duration
+            if not word_timings:
+                logger.warning("No WordBoundary events — using even split based on real duration")
+                words = text.split()
+                per_word = (real_duration / 1.25) / max(len(words), 1)  # account for x1.25 speed
+                word_timings = [
+                    {
+                        "word": word,
+                        "start": round(i * per_word, 3),
+                        "duration": round(per_word * 0.85, 3)
+                    }
+                    for i, word in enumerate(words)
+                ]
+                logger.info(f"Built {len(word_timings)} even-split timings, {per_word:.2f}s per word")
+
             return tts_path, word_timings
         except Exception as e:
             logger.error(f"TTS generation failed: {str(e)}")
             return None, []
+
 
     def _generate_caption_frame(self, text: str, highlight_word: str, img: Image.Image) -> np.ndarray:
         """Generate a single frame with the current spoken word highlighted in yellow"""
@@ -259,11 +280,11 @@ class VideoCreator:
                 tts_audio = mp.AudioFileClip(str(tts_fast_path))
 
                 # Adjust word timings for x1.25 speed
-                word_timings = [{
-                    "word": w["word"],
-                    "start": w["start"] / 1.25,
-                    "duration": w["duration"] / 1.25
-                } for w in word_timings]
+                #word_timings = [{
+                #    "word": w["word"],
+                #    "start": w["start"] / 1.25,
+                #    "duration": w["duration"] / 1.25
+                #} for w in word_timings]
 
             tts_duration = tts_audio.duration if tts_audio else 0
             video_duration = max(self.config.DURATION, tts_duration + 1.0)
