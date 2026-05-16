@@ -188,7 +188,7 @@ class VideoCreator:
             return None, []
 
 
-    def _generate_caption_frame(self, highlight_word: str, img: Image.Image) -> np.ndarray:
+def _generate_caption_frame(self, highlight_word: str, img: Image.Image) -> np.ndarray:
     """Show only the current spoken word centered on screen"""
     try:
         frame = img.copy().convert("RGBA")
