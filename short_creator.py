@@ -164,17 +164,33 @@ class VideoCreator:
         try:
             # Encode text to handle unicode
             text = text.encode('utf-8').decode('utf-8')
-            # Try to use custom font, fallback to bundled
-            custom_font = Path(self.config.FONT_PATH)
-            if custom_font.exists():
-                font = ImageFont.truetype(str(custom_font), 48)
-                logger.info(f"Using custom font: {custom_font}")
-            else:
-                try:
-                    font = ImageFont.truetype(str(self.fonts_dir / "arial.ttf"), 48)
-                except:
-                    font = ImageFont.load_default()
-                    logger.warning("Using default font")
+            # Try fonts in order until one works
+            font = None
+            font_paths = [
+                Path(self.config.FONT_PATH),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),      # Linux
+                Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),  # Linux
+                Path("/System/Library/Fonts/Helvetica.ttc"),                   # Mac
+                Path("C:/Windows/Fonts/arial.ttf"),                            # Windows
+                self.fonts_dir / "DejaVuSans.ttf",
+            ]
+        
+            for path in font_paths:
+                if path.exists():
+                    try:
+                        font = ImageFont.truetype(str(path), 48)
+                        logger.info(f"Using font: {path}")
+                        break
+                    except:
+                        continue
+        
+            if font is None:
+                logger.warning("No Unicode font found, downloading DejaVuSans")
+                font_url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
+                font_data = requests.get(font_url).content
+                font_save_path = self.fonts_dir / "DejaVuSans.ttf"
+                font_save_path.write_bytes(font_data)
+                font = ImageFont.truetype(str(font_save_path), 48)
 
             # Split text into lines
             words = text.split(" ")
