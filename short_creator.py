@@ -59,40 +59,40 @@ class TelegramClient:
         self.base_url = f"https://api.telegram.org/bot{token}/"
         self.session = requests.Session()
 
-def get_latest_image(self, channel: str) -> Optional[Tuple[str, str]]:
-    try:
-        url = f"{self.base_url}getUpdates?allowed_updates=[\"channel_post\",\"message\"]"
-        updates = self.session.get(url).json()
+    def get_latest_image(self, channel: str) -> Optional[Tuple[str, str]]:
+        try:
+            url = f"{self.base_url}getUpdates?allowed_updates=[\"channel_post\",\"message\"]"
+            updates = self.session.get(url).json()
         
-        logger.info(f"Total updates received: {len(updates.get('result', []))}")
+            logger.info(f"Total updates received: {len(updates.get('result', []))}")
         
-        for update in reversed(updates.get("result", [])):
-            post = update.get("channel_post") or update.get("message", {})
-            sender = post.get("sender_chat", {}).get("username", "none")
-            chat = post.get("chat", {}).get("username", "none")
-            has_photo = "photo" in post
-            logger.info(f"Update: sender_chat=@{sender}, chat=@{chat}, has_photo={has_photo}")
+            for update in reversed(updates.get("result", [])):
+                post = update.get("channel_post") or update.get("message", {})
+                sender = post.get("sender_chat", {}).get("username", "none")
+                chat = post.get("chat", {}).get("username", "none")
+                has_photo = "photo" in post
+                logger.info(f"Update: sender_chat=@{sender}, chat=@{chat}, has_photo={has_photo}")
             
-            chat_username = "@" + (
-                post.get("sender_chat", {}).get("username") or
-                post.get("chat", {}).get("username", "")
-            )
-            logger.info(f"Comparing: '{chat_username}' == '{channel}'")
-            
-            if chat_username == channel and has_photo:
-                photo = max(post["photo"], key=lambda x: x["file_size"])
-                file_resp = self.session.get(
-                    f"{self.base_url}getFile?file_id={photo['file_id']}"
-                ).json()
-                file_path = file_resp["result"]["file_path"]
-                caption = post.get("caption", "No caption")
-                return (
-                    f"https://api.telegram.org/file/bot{self.token}/{file_path}",
-                    caption
+                chat_username = "@" + (
+                    post.get("sender_chat", {}).get("username") or
+                    post.get("chat", {}).get("username", "")
                 )
-    except Exception as e:
-        logger.error(f"Error fetching telegram content: {str(e)}")
-    return None
+                logger.info(f"Comparing: '{chat_username}' == '{channel}'")
+            
+                if chat_username == channel and has_photo:
+                    photo = max(post["photo"], key=lambda x: x["file_size"])
+                    file_resp = self.session.get(
+                        f"{self.base_url}getFile?file_id={photo['file_id']}"
+                    ).json()
+                    file_path = file_resp["result"]["file_path"]
+                    caption = post.get("caption", "No caption")
+                    return (
+                        f"https://api.telegram.org/file/bot{self.token}/{file_path}",
+                        caption
+                    )
+        except Exception as e:
+            logger.error(f"Error fetching telegram content: {str(e)}")
+        return None
 
 class VideoCreator:
     def __init__(self, config: Config):
