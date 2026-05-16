@@ -6,7 +6,7 @@ import random
 import requests
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -44,14 +44,14 @@ class Config:
     YOUTUBE_CLIENT_SECRETS: dict
     TITLE_TEMPLATE: str = "{channel} - {date}"
     DESCRIPTION: str = "Automated YouTube Short created from Telegram content"
-    TAGS: List[str] = ["Shorts", "Auto-generated", "Telegram"]
+    TAGS: List[str] = field(default_factory=lambda: ["Shorts", "Auto-generated", "Telegram"])
     PRIVACY_STATUS: str = "private"
     
     # Content
     DURATION: int = 15
     MUSIC_OPTION: str = "https://api.ttok.com/api/proxy?url=https%3A%2F%2Fcdn.pixabay.com%2Fdownload%2Faudio%2F2026%2F03%2F24%2Faudio_b3f7aa2696.mp3%3Ffilename%3Dthe_mountain-cheerful-cheerful-music-507997.mp3"
     FONT_PATH: str = "Arial.ttf"
-    OUTPUT_RESOLUTION: Tuple[int, int] = (1080, 1920)
+    OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))
 
 class TelegramClient:
     def __init__(self, token: str):
