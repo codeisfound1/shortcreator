@@ -114,46 +114,91 @@ class VideoCreator:
             logger.error(f"Music download failed: {str(e)}")
             return Path(self.music_cache / "default.mp3")
 
+    def generate_tts(self, text: str) -> Optional[Path]:
+        """Generate Vietnamese TTS using edge-tts"""
+        try:
+            import edge_tts
+            import asyncio
+        
+            output_path = Path("tts_audio.mp3")
+        
+            async def _generate():
+                communicate = edge_tts.Communicate(
+                    text=text,
+                    voice="vi-VN-HoaiMyNeural",
+                    rate="+25%"  # x1.25 speed
+                )
+                await communicate.save(str(output_path))
+        
+            asyncio.run(_generate())
+            logger.info("TTS generated successfully")
+            return output_path
+        except Exception as e:
+            logger.error(f"TTS generation failed: {str(e)}")
+            return None
+
     def create_short(self, image_url: str, caption: str) -> Optional[Path]:
         img_path = Path("temp_image.jpg")
+        tts_path = Path("tts_audio.mp3")
         try:
             # Download and process image
             img_data = requests.get(image_url).content
             img_path.write_bytes(img_data)
             img = Image.open(img_path)
-        
+
             # Crop/fill to exact short resolution
             img = self._fit_image(img, self.config.OUTPUT_RESOLUTION)
-        
+
             # Create caption overlay
             caption_overlay = self._generate_caption_overlay(caption, img.size)
             if caption_overlay:
                 img = Image.alpha_composite(img.convert("RGBA"), caption_overlay)
-        
+
+            # Generate TTS
+            tts_audio_path = self.generate_tts(caption)
+
+            # Get TTS duration to set video length
+            if tts_audio_path and tts_audio_path.exists():
+                tts_clip = mp.AudioFileClip(str(tts_audio_path))
+                video_duration = max(tts_clip.duration + 1.0, self.config.DURATION)
+            else:
+                tts_clip = None
+                video_duration = self.config.DURATION
+
             # Create video clip
-            video = mp.ImageClip(np.array(img.convert("RGB")), duration=self.config.DURATION)
+            video = mp.ImageClip(np.array(img.convert("RGB")), duration=video_duration)
             video = video.fadein(0.5).fadeout(0.5)
-        
-            # Add music
+
+            # Build audio: background music + TTS voice
+            audio_clips = []
+
             if self.config.MUSIC_OPTION:
                 if self.config.MUSIC_OPTION.startswith("http"):
                     music_path = self.download_music(self.config.MUSIC_OPTION)
                 else:
                     music_path = Path(self.config.MUSIC_OPTION)
-            
-                audio = mp.AudioFileClip(str(music_path))
-            
-                # Loop music if shorter than video, trim if longer
-                if audio.duration < self.config.DURATION:
-                    loops = int(self.config.DURATION / audio.duration) + 1
-                    audio = mp.concatenate_audioclips([audio] * loops)
-                audio = audio.subclip(0, self.config.DURATION)
-            
-                # Fade in/out audio
-                audio = audio.audio_fadein(1.0).audio_fadeout(1.5)
-                audio = audio.volumex(0.8)
-                video = video.set_audio(audio)
-        
+
+                bg_music = mp.AudioFileClip(str(music_path))
+
+                # Loop music if shorter than video
+                if bg_music.duration < video_duration:
+                    loops = int(video_duration / bg_music.duration) + 1
+                    bg_music = mp.concatenate_audioclips([bg_music] * loops)
+                bg_music = bg_music.subclip(0, video_duration)
+                bg_music = bg_music.audio_fadein(1.0).audio_fadeout(1.5)
+                bg_music = bg_music.volumex(0.3)  # Lower volume so TTS is clear
+                audio_clips.append(bg_music)
+
+            if tts_clip:
+                tts_clip = tts_clip.volumex(1.0)  # TTS at full volume
+                tts_clip = tts_clip.set_start(0.5) # Small delay before TTS starts
+                audio_clips.append(tts_clip)
+
+            # Mix background music and TTS together
+            if audio_clips:
+                final_audio = mp.CompositeAudioClip(audio_clips)
+                video = video.set_audio(final_audio)
+
             # Save video
             output_path = Path("output_short.mp4")
             video.write_videofile(
@@ -170,6 +215,8 @@ class VideoCreator:
         finally:
             if img_path.exists():
                 img_path.unlink()
+            if tts_path.exists():
+                tts_path.unlink()
     
     def _fit_image(self, img: Image.Image, target_size: tuple) -> Image.Image:
         """Crop and resize image to exactly fill target size (like CSS cover)"""
