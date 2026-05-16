@@ -150,7 +150,7 @@ class VideoCreator:
                 fps=24,
                 codec='libx264',
                 audio_codec='aac',
-                logger=logger
+                logger="bar"  # MoviePy's built-in progress bar, or None to silence
             )
             return output_path
         except Exception as e:
@@ -215,7 +215,10 @@ class VideoCreator:
                 draw = ImageDraw.Draw(img)
                 
                 # Background rectangle
-                text_width, text_height = draw.textsize(line, font=font)
+                #text_width, text_height = draw.textsize(line, font=font)
+                bbox = draw.textbbox((0, 0), line, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
                 padding = 20
                 draw.rectangle(
                     (padding, img_size[1] - text_height - padding - 40, 
