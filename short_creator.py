@@ -189,30 +189,43 @@ class VideoCreator:
 
 
     def _generate_caption_frame(self, text: str, highlight_word: str, img: Image.Image) -> np.ndarray:
-        frame = img.copy().convert("RGBA")
-        overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
+        try:
+            frame = img.copy().convert("RGBA")
+            overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
 
-        font = ImageFont.truetype(self.config.FONT_PATH, 52)
-        font_bold = ImageFont.truetype(self.config.FONT_BOLD_PATH, 62)
+            font = ImageFont.truetype(self.config.FONT_PATH, 52)
+            font_bold = ImageFont.truetype(self.config.FONT_BOLD_PATH, 62)
     
-        # Emoji font fallback
-        emoji_font_paths = [
-            "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-            "/usr/share/fonts/noto/NotoColorEmoji.ttf",
-            "/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf",
-        ]
-        emoji_font = None
-        for path in emoji_font_paths:
-            if Path(path).exists():
-                try:
-                    emoji_font = ImageFont.truetype(path, 109)  # NotoColorEmoji needs size 109
-                    logger.info(f"Emoji font loaded: {path}")
-                    break
-                except Exception:
-                    continue
-        if not emoji_font:
-            logger.warning("Emoji font not found, emojis may not render")
+            # Emoji font fallback
+            emoji_font_paths = [
+                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf",
+            ]
+            emoji_font = None
+            for path in emoji_font_paths:
+                if Path(path).exists():
+                    try:
+                        emoji_font = ImageFont.truetype(path, 109)  # NotoColorEmoji needs size 109
+                        logger.info(f"Emoji font loaded: {path}")
+                        break
+                    except Exception:
+                        continue
+            if not emoji_font:
+                logger.warning("Emoji font not found, emojis may not render")
+        
+            result = Image.alpha_composite(frame, overlay)
+            arr = np.array(result.convert("RGB"))
+        
+            # Safety check
+            if arr is None or arr.size == 0:
+                raise ValueError("Empty frame array")
+            return arr
+            except Exception as e:
+            logger.error(f"Caption frame generation failed: {str(e)}")
+            # Return plain image as fallback
+            return np.array(img.convert("RGB"))
 
         def is_emoji(char: str) -> bool:
             cp = ord(char)
@@ -369,17 +382,30 @@ class VideoCreator:
 
             logger.info(f"Generating {total_frames} synced caption frames...")
             for frame_idx in range(total_frames):
-                current_time = frame_idx / fps
+            current_time = frame_idx / fps
 
-                # Find current word being spoken
-                current_word = ""
-                for timing in word_timings:
-                    if timing["start"] <= current_time <= timing["start"] + timing["duration"]:
-                        current_word = timing["word"]
-                        break
+            # Find current word being spoken
+            current_word = ""
+            for timing in word_timings:
+            if timing["start"] <= current_time <= timing["start"] + timing["duration"]:
+                current_word = timing["word"]
+                break
 
-                frame = self._generate_caption_frame(caption, current_word, img)
+            try:
+            frame = self._generate_caption_frame(caption, current_word, img)
+            if frame is None:
+                raise ValueError("Frame is None")
                 frames.append(frame)
+            except Exception as e:
+            logger.error(f"Frame {frame_idx} failed: {str(e)}")
+            # Fallback: use plain image without caption
+            frames.append(np.array(img.convert("RGB")))
+
+            if not frames:
+                logger.error("No frames generated")
+            return None
+
+            logger.info(f"Generated {len(frames)} frames successfully")
 
             # Create video from frames
             video = mp.ImageSequenceClip(frames, fps=fps)
