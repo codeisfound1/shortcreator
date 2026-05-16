@@ -55,37 +55,34 @@ class Config:
 
 class TelegramClient:
     def __init__(self, token: str):
+        self.token = token  # ← was missing!
         self.base_url = f"https://api.telegram.org/bot{token}/"
         self.session = requests.Session()
 
     def get_latest_image(self, channel: str) -> Optional[Tuple[str, str]]:
-        try:
-            url = f"{self.base_url}getChat?chat_id={channel}"
-            chat_info = self.session.get(url).json()
-            
-            if not chat_info["ok"]:
-                logger.error(f"Failed to get chat info: {chat_info}")
-                return None
-
-            url = f"{self.base_url}getUpdates?allowed_updates=message"
-            updates = self.session.get(url).json()
-            
-            if not updates["ok"]:
-                logger.error(f"Failed to get updates: {updates}")
-                return None
-
-            for update in reversed(updates["result"]):
-                if "message" in update and "photo" in update["message"]:
-                    msg = update["message"]
-                    if msg.get("chat", {}).get("id") == chat_info["result"]["id"]:
-                        photo = max(msg["photo"], key=lambda x: x["file_id"])
-                        file_url = f"{self.base_url}getFile?file_id={photo['file_id']}"
-                        file_path = self.session.get(file_url).json()["result"]["file_path"]
-                        caption = msg.get("caption", "No caption")
-                        return f"https://api.telegram.org/file/bot{self.token}/{file_path}", caption
-        except Exception as e:
-            logger.error(f"Error fetching telegram content: {str(e)}")
-        return None
+    try:
+        url = f"{self.base_url}getUpdates?allowed_updates=[\"channel_post\"]"
+        updates = self.session.get(url).json()
+        if not updates["ok"]:
+            logger.error(f"Failed to get updates: {updates}")
+            return None
+        for update in reversed(updates.get("result", [])):
+            post = update.get("channel_post", {})
+            chat_username = "@" + post.get("chat", {}).get("username", "")
+            if chat_username == channel and "photo" in post:
+                photo = max(post["photo"], key=lambda x: x["file_size"])
+                file_resp = self.session.get(
+                    f"{self.base_url}getFile?file_id={photo['file_id']}"
+                ).json()
+                file_path = file_resp["result"]["file_path"]
+                caption = post.get("caption", "No caption")
+                return (
+                    f"https://api.telegram.org/file/bot{self.token}/{file_path}",
+                    caption
+                )
+    except Exception as e:
+        logger.error(f"Error fetching telegram content: {str(e)}")
+    return None
 
 class VideoCreator:
     def __init__(self, config: Config):
