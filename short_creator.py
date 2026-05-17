@@ -257,16 +257,14 @@ class VideoCreator:
                 x = (img_w - text_w) // 2
                 y = int(img_h * 0.75)
 
-                # Background box
-                draw.rectangle(
-                    (x - padding_x, y - padding_y,
-                     x + text_w + padding_x, y + text_h + padding_y),
-                    fill=(0, 0, 0, 200)
-                )
-
-                # Shadow
-                draw.text((x + 2, y + 2), clean_word, font=font_bold, fill=(0, 0, 0, 200))
-                # Word in yellow
+                # Dark outline/border around text only (drawn at offsets in all directions)
+                outline_color = (0, 0, 0, 255)
+                outline_width = 4
+                for ox in range(-outline_width, outline_width + 1):
+                    for oy in range(-outline_width, outline_width + 1):
+                        if ox != 0 or oy != 0:
+                            draw.text((x + ox, y + oy), clean_word, font=font_bold, fill=outline_color)
+                # Word in yellow on top
                 draw.text((x, y), clean_word, font=font_bold, fill=(255, 220, 0, 255))
 
             result = Image.alpha_composite(frame, overlay)
