@@ -61,7 +61,8 @@ class Config:
     FONT_BOLD_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))
     LOGO_PATH: str = "brand_logo.png"
-    PUBLISHED_IDS_FILE: str = ".published_ids.json"  # Tracks processed Telegram message IDs
+    PUBLISHED_IDS_FILE: str = ".published_ids.json"  # Tracks processed Telegram message IDs (fallback)
+    OFFSET_FILE: str = ".telegram_offset.json"        # Persists getUpdates cursor to skip old updates
 
 
 class TelegramClient:
@@ -74,31 +75,62 @@ class TelegramClient:
         self,
         channel: str,
         published_ids: set,
-        max_posts: int = 3
-    ) -> List[Tuple[str, str, str]]:
-        """Return up to `max_posts` (image_url, caption, unique_key) tuples for the
-        latest unprocessed photo posts from `channel`, ordered newest-first.
-        Already-published posts are skipped.
+        max_posts: int = 3,
+        offset: Optional[int] = None,
+    ) -> Tuple[List[Tuple[str, str, str]], Optional[int]]:
+        """Fetch up to `max_posts` new photo posts from `channel`.
+
+        Uses the Telegram `getUpdates` offset so already-seen updates are
+        never re-delivered by the API.  The returned `next_offset` must be
+        persisted by the caller and passed back on the next run.
+
+        Duplicate guard is two-layered:
+          1. Primary  — `offset` advances the Telegram cursor; Telegram will
+                        never send those update_ids again.
+          2. Fallback — `published_ids` (keyed by channel:message_id) catches
+                        any edge-case where the offset file was lost/reset.
+
+        Returns:
+            (posts, next_offset)
+            posts      — list of (image_url, caption, unique_key), newest-first
+            next_offset — value to store for the next run; None if unchanged
         """
         results: List[Tuple[str, str, str]] = []
+        max_update_id: Optional[int] = None
         try:
-            url = f"{self.base_url}getUpdates?allowed_updates=[\"channel_post\",\"message\"]"
+            params = "allowed_updates=[\"channel_post\",\"message\"]"
+            if offset is not None:
+                # Passing offset=N tells Telegram to acknowledge all updates
+                # with update_id < N and only return updates >= N.
+                params += f"&offset={offset}"
+
+            url = f"{self.base_url}getUpdates?{params}"
             updates = self.session.get(url).json()
 
-            logger.info(f"Total updates received: {len(updates.get('result', []))}")
+            logger.info(f"Total updates received: {len(updates.get('result', []))} "
+                        f"(offset={offset})")
 
             if not updates["ok"]:
                 logger.error(f"Failed to get updates: {updates}")
-                return results
+                return results, None
 
-            for update in reversed(updates.get("result", [])):
+            all_updates = updates.get("result", [])
+
+            # Track the highest update_id seen so we can advance the cursor
+            for update in all_updates:
+                uid = update.get("update_id", 0)
+                if max_update_id is None or uid > max_update_id:
+                    max_update_id = uid
+
+            # Walk newest-first to collect up to max_posts qualifying posts
+            for update in reversed(all_updates):
                 if len(results) >= max_posts:
                     break
 
                 post = update.get("channel_post") or update.get("message", {})
 
                 sender = post.get("sender_chat", {}).get("username", "none")
-                chat = post.get("chat", {}).get("username", "none")
+                chat   = post.get("chat", {}).get("username", "none")
                 has_photo = "photo" in post
                 logger.info(f"Update: sender_chat=@{sender}, chat=@{chat}, has_photo={has_photo}")
 
@@ -112,6 +144,7 @@ class TelegramClient:
                     message_id = str(post.get("message_id", update.get("update_id", "")))
                     unique_key = f"{channel}:{message_id}"
 
+                    # Fallback duplicate guard
                     if unique_key in published_ids:
                         logger.info(f"Skipping already-published post: {unique_key}")
                         continue
@@ -121,7 +154,7 @@ class TelegramClient:
                         f"{self.base_url}getFile?file_id={photo['file_id']}"
                     ).json()
                     file_path = file_resp["result"]["file_path"]
-                    caption = post.get("caption", "No caption")
+                    caption   = post.get("caption", "No caption")
                     image_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
                     results.append((image_url, caption, unique_key))
                     logger.info(f"Queued post {unique_key} (total queued: {len(results)})")
@@ -129,7 +162,10 @@ class TelegramClient:
         except Exception as e:
             logger.error(f"Error fetching telegram content: {str(e)}")
 
-        return results
+        # next_offset = max_update_id + 1 tells Telegram to never re-send
+        # any of the updates we just processed.
+        next_offset = (max_update_id + 1) if max_update_id is not None else None
+        return results, next_offset
 
 
 class VideoCreator:
@@ -569,7 +605,9 @@ async def _main():
         if not config.TELEGRAM_CHANNELS:
             raise ValueError("At least one TELEGRAM_CHANNEL must be specified")
 
-        # Load published IDs for duplicate prevention
+        # -- Load duplicate-prevention state --
+
+        # Fallback guard: channel:message_id keys of posts already turned into videos
         published_ids_file = Path(config.PUBLISHED_IDS_FILE)
         published_ids: set = set()
         if published_ids_file.exists():
@@ -579,14 +617,41 @@ async def _main():
             except Exception as e:
                 logger.warning(f"Could not load published IDs: {e}")
 
+        # Primary guard: getUpdates offset — tells Telegram never to re-send
+        # updates we have already seen.  Stored per-channel so multiple channels
+        # don't share a cursor.
+        offset_file = Path(config.OFFSET_FILE)
+        offset_state: dict = {}   # {channel: next_offset_int}
+        if offset_file.exists():
+            try:
+                offset_state = json.loads(offset_file.read_text())
+                logger.info(f"Loaded getUpdates offsets: {offset_state}")
+            except Exception as e:
+                logger.warning(f"Could not load offset state: {e}")
+
+        def save_offset_state() -> None:
+            try:
+                offset_file.write_text(json.dumps(offset_state))
+            except Exception as e:
+                logger.warning(f"Could not save offset state: {e}")
+
         # -- Fetch up to MAX_POSTS latest posts from Telegram --
         telegram = TelegramClient(config.TELEGRAM_TOKEN)
         posts: List[Tuple[str, str, str]] = []
 
         for channel in config.TELEGRAM_CHANNELS:
-            channel_posts = telegram.get_latest_images(
-                channel, published_ids, max_posts=config.MAX_POSTS
+            current_offset = offset_state.get(channel)
+            channel_posts, next_offset = telegram.get_latest_images(
+                channel, published_ids, max_posts=config.MAX_POSTS,
+                offset=current_offset,
             )
+            # Always advance the cursor even if no qualifying posts were found,
+            # so we never re-process non-photo updates either.
+            if next_offset is not None:
+                offset_state[channel] = next_offset
+                save_offset_state()
+                logger.info(f"Advanced getUpdates offset for {channel} -> {next_offset}")
+
             posts.extend(channel_posts)
             if len(posts) >= config.MAX_POSTS:
                 posts = posts[: config.MAX_POSTS]
