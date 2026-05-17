@@ -226,7 +226,7 @@ class VideoCreator:
             draw = ImageDraw.Draw(overlay)
 
             img_w, img_h = frame.size
-            font_bold = ImageFont.truetype(self.config.FONT_BOLD_PATH, 72)
+            font_bold = ImageFont.truetype(self.config.FONT_BOLD_PATH, 81)
 
             # Strip emojis from word
             clean_word = "".join(
@@ -259,7 +259,7 @@ class VideoCreator:
 
                 # Dark outline/border around text only (drawn at offsets in all directions)
                 outline_color = (0, 0, 0, 255)
-                outline_width = 4
+                outline_width = 6
                 for ox in range(-outline_width, outline_width + 1):
                     for oy in range(-outline_width, outline_width + 1):
                         if ox != 0 or oy != 0:
