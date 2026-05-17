@@ -206,7 +206,7 @@ class VideoCreator:
                     {
                         "word": word,
                         "start": round(i * per_word, 3),
-                        "duration": round(per_word * 0.85, 3)
+                        "duration": round(per_word * 0.9, 3)
                     }
                     for i, word in enumerate(words)
                 ]
