@@ -8,7 +8,7 @@ import requests
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, timedelta, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -49,6 +49,9 @@ class Config:
     DESCRIPTION: str = "Automated YouTube Short created from Telegram content"
     TAGS: List[str] = field(default_factory=lambda: ["Shorts", "Auto-generated", "Telegram"])
     PRIVACY_STATUS: str = "private"
+    PLAYLIST_ID: str = "PL3B7UtjF3P8ya2XNvBX8fgKOoqsCza8dv"  # Target playlist
+    PUBLISH_DELAY_HOURS: int = 1                               # Schedule publish N hours from now
+    BRAND_HASHTAGS: List[str] = field(default_factory=lambda: ["cryptohieuqua", "cryptohieu.com"])
 
     # Content
     DURATION: int = 15
@@ -57,6 +60,7 @@ class Config:
     FONT_BOLD_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))
     LOGO_PATH: str = "brand_logo.png"
+    PUBLISHED_IDS_FILE: str = ".published_ids.json"  # Tracks processed Telegram message IDs
 
 
 class TelegramClient:
@@ -65,7 +69,9 @@ class TelegramClient:
         self.base_url = f"https://api.telegram.org/bot{token}/"
         self.session = requests.Session()
 
-    def get_latest_image(self, channel: str) -> Optional[Tuple[str, str]]:
+    def get_latest_image(self, channel: str, published_ids: set) -> Optional[Tuple[str, str, str]]:
+        """Return (image_url, caption, unique_message_key) for the latest unprocessed post.
+        Returns None if no new content found or all recent posts are already published."""
         try:
             url = f"{self.base_url}getUpdates?allowed_updates=[\"channel_post\",\"message\"]"
             updates = self.session.get(url).json()
@@ -91,6 +97,14 @@ class TelegramClient:
                 logger.info(f"Comparing: '{chat_username}' == '{channel}'")
 
                 if chat_username == channel and has_photo:
+                    # Build a stable unique key: channel + message_id
+                    message_id = str(post.get("message_id", update.get("update_id", "")))
+                    unique_key = f"{channel}:{message_id}"
+
+                    if unique_key in published_ids:
+                        logger.info(f"Skipping already-published post: {unique_key}")
+                        continue  # try next older post
+
                     photo = max(post["photo"], key=lambda x: x["file_size"])
                     file_resp = self.session.get(
                         f"{self.base_url}getFile?file_id={photo['file_id']}"
@@ -99,7 +113,8 @@ class TelegramClient:
                     caption = post.get("caption", "No caption")
                     return (
                         f"https://api.telegram.org/file/bot{self.token}/{file_path}",
-                        caption
+                        caption,
+                        unique_key
                     )
         except Exception as e:
             logger.error(f"Error fetching telegram content: {str(e)}")
@@ -160,7 +175,10 @@ class VideoCreator:
             tts_path = Path("temp_tts.mp3")
             word_timings = []
 
-            communicate = edge_tts.Communicate(text, voice="vi-VN-HoaiMyNeural")
+            # Append Vietnamese subscribe call-to-action
+            subscribe_cta = "Đừng quên đăng ký kênh để xem thêm nhiều video hữu ích nhé!"
+            text_with_cta = f"{text}. {subscribe_cta}"
+            communicate = edge_tts.Communicate(text_with_cta, voice="vi-VN-HoaiMyNeural")
 
             with open(str(tts_path), "wb") as f:
                 async for chunk in communicate.stream():
@@ -421,15 +439,27 @@ class YouTubeUploader:
                 for word in caption.split()
                 if len(word.strip("#.,!?")) > 3
             ]
-            all_tags = config.TAGS + caption_tags
-            hashtags = " ".join(f"#{tag}" for tag in caption_tags[:5])
+            # Merge brand hashtags (always present) + caption tags
+            brand_tags = config.BRAND_HASHTAGS  # ["cryptohieuqua", "cryptohieu.com"]
+            all_tags = config.TAGS + brand_tags + caption_tags
+
+            # Build hashtag string: brand hashtags first, then top caption tags
+            brand_hashtag_str = " ".join(f"#{t}" for t in brand_tags)
+            caption_hashtag_str = " ".join(f"#{t}" for t in caption_tags[:5])
+            hashtags = f"{brand_hashtag_str} {caption_hashtag_str}".strip()
 
             # Title: "Video Short + caption + datetime"
             date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             title = f"Video Short {caption[:50]} {date_str}"
 
             # Description with hashtags
-            description = f"{config.DESCRIPTION}\n\n{hashtags}\n#Shorts"
+            description = f"{config.DESCRIPTION}\n\n{hashtags}\n#Shorts\n\ncryptohieu.com"
+
+            # Schedule publish time: now + PUBLISH_DELAY_HOURS
+            publish_at = (datetime.now(timezone.utc) + timedelta(hours=config.PUBLISH_DELAY_HOURS)).strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z"
+            )
+            logger.info(f"Scheduling publish at: {publish_at} UTC")
 
             body = {
                 "snippet": {
@@ -439,7 +469,9 @@ class YouTubeUploader:
                     "categoryId": "22"
                 },
                 "status": {
-                    "privacyStatus": config.PRIVACY_STATUS
+                    "privacyStatus": "private",         # must be private for scheduled
+                    "publishAt": publish_at,             # schedule publish time
+                    "selfDeclaredMadeForKids": False
                 }
             }
 
@@ -461,7 +493,28 @@ class YouTubeUploader:
                 if status:
                     logger.info(f"Uploaded {int(status.progress() * 100)}%")
 
-            logger.info(f"Video uploaded: https://youtu.be/{response['id']}")
+            video_id = response["id"]
+            logger.info(f"Video uploaded: https://youtu.be/{video_id} (scheduled: {publish_at})")
+
+            # Add video to target playlist
+            if config.PLAYLIST_ID:
+                try:
+                    youtube.playlistItems().insert(
+                        part="snippet",
+                        body={
+                            "snippet": {
+                                "playlistId": config.PLAYLIST_ID,
+                                "resourceId": {
+                                    "kind": "youtube#video",
+                                    "videoId": video_id
+                                }
+                            }
+                        }
+                    ).execute()
+                    logger.info(f"Added to playlist: {config.PLAYLIST_ID}")
+                except Exception as pe:
+                    logger.error(f"Playlist insert failed: {pe}")
+
             return response
         except Exception as e:
             logger.error(f"Upload failed: {str(e)}")
@@ -478,6 +531,9 @@ async def _main():
             DESCRIPTION=os.getenv("DESCRIPTION", "Automated YouTube Short"),
             TAGS=get_env_json("TAGS", '["Shorts", "Auto-generated"]'),
             PRIVACY_STATUS=os.getenv("PRIVACY_STATUS", "private"),
+            PLAYLIST_ID=os.getenv("PLAYLIST_ID", "PL3B7UtjF3P8ya2XNvBX8fgKOoqsCza8dv"),
+            PUBLISH_DELAY_HOURS=int(os.getenv("PUBLISH_DELAY_HOURS", 1)),
+            BRAND_HASHTAGS=get_env_json("BRAND_HASHTAGS", '["cryptohieuqua", "cryptohieu.com"]'),
             DURATION=int(os.getenv("DURATION", 15)),
             MUSIC_OPTION=os.getenv("MUSIC_OPTION", "https://api.ttok.com/api/proxy?url=https%3A%2F%2Fcdn.pixabay.com%2Fdownload%2Faudio%2F2026%2F03%2F24%2Faudio_b3f7aa2696.mp3%3Ffilename%3Dthe_mountain-cheerful-cheerful-music-507997.mp3"),
             FONT_PATH=os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
@@ -492,20 +548,31 @@ async def _main():
         if not config.TELEGRAM_CHANNELS:
             raise ValueError("At least one TELEGRAM_CHANNEL must be specified")
 
-        # Fetch content from Telegram
+        # Load published IDs for duplicate prevention
+        published_ids_file = Path(config.PUBLISHED_IDS_FILE)
+        published_ids: set = set()
+        if published_ids_file.exists():
+            try:
+                published_ids = set(json.loads(published_ids_file.read_text()))
+                logger.info(f"Loaded {len(published_ids)} published IDs")
+            except Exception as e:
+                logger.warning(f"Could not load published IDs: {e}")
+
+        # Fetch content from Telegram (skip already-published posts)
         telegram = TelegramClient(config.TELEGRAM_TOKEN)
         content = None
         caption = ""
         image_url = ""
+        unique_key = ""
 
         for channel in config.TELEGRAM_CHANNELS:
-            content = telegram.get_latest_image(channel)
+            content = telegram.get_latest_image(channel, published_ids)
             if content:
-                image_url, caption = content
+                image_url, caption, unique_key = content
                 break
 
         if not content:
-            logger.error("No suitable content found")
+            logger.error("No new suitable content found (all recent posts already published or no photos)")
             return
 
         # Create video
@@ -517,6 +584,15 @@ async def _main():
         # Upload to YouTube
         uploader = YouTubeUploader(config.YOUTUBE_CLIENT_SECRETS)
         uploader.upload_short(video_path, config, caption=caption)
+
+        # Mark post as published to prevent future duplicates
+        if unique_key:
+            published_ids.add(unique_key)
+            try:
+                published_ids_file.write_text(json.dumps(list(published_ids)))
+                logger.info(f"Saved published ID: {unique_key}")
+            except Exception as e:
+                logger.warning(f"Could not save published IDs: {e}")
 
         # Cleanup
         if video_path.exists():
