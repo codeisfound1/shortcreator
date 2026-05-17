@@ -247,6 +247,25 @@ class VideoCreator:
             logger.error(f"Caption frame failed: {str(e)}")
             return np.array(img.convert("RGB"))
 
+    def _apply_zoom(self, img: Image.Image, progress: float) -> Image.Image:
+        """Apply smooth zoom-in then zoom-out (Ken Burns effect).
+        progress: 0.0 → 1.0 over the full video duration.
+        Zoom peaks at the midpoint, ranging from 1.0x to 1.15x scale.
+        """
+        # Triangle wave: 0→1→0 mapped to zoom 1.0→1.15→1.0
+        t = 1.0 - abs(progress * 2 - 1.0)   # 0..1..0
+        zoom = 1.0 + 0.15 * t
+
+        w, h = img.size
+        new_w = int(w / zoom)
+        new_h = int(h / zoom)
+
+        # Crop center
+        left = (w - new_w) // 2
+        top  = (h - new_h) // 2
+        cropped = img.crop((left, top, left + new_w, top + new_h))
+        return cropped.resize((w, h), Image.LANCZOS)
+
     async def create_short(self, image_url: str, caption: str) -> Optional[Path]:
         img_path = Path("temp_image.jpg")
         tts_path = Path("temp_tts.mp3")
@@ -290,6 +309,7 @@ class VideoCreator:
             logger.info(f"Generating {total_frames} synced caption frames...")
             for frame_idx in range(total_frames):
                 current_time = frame_idx / fps
+                progress = frame_idx / max(total_frames - 1, 1)
 
                 # Find current word being spoken
                 current_word = ""
@@ -299,7 +319,8 @@ class VideoCreator:
                         break
 
                 try:
-                    frame = self._generate_caption_frame(current_word, img)
+                    zoomed_img = self._apply_zoom(img, progress)
+                    frame = self._generate_caption_frame(current_word, zoomed_img)
                     if frame is None:
                         raise ValueError("Frame is None")
                     frames.append(frame)
