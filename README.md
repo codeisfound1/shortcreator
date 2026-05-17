@@ -101,3 +101,141 @@ export PLAYLIST_ID="PL3B7UtjF3P8ya2XNvBX8fgKOoqsCza8dv"
 
 python short_creator.py
 ```
+# ShortCreator — Duplicate Prevention Guide
+
+## How duplicates are prevented
+
+Two layers work together to ensure the same Telegram post is never turned into a video twice.
+
+### Layer 1 — Telegram `getUpdates` offset (primary)
+
+Every time the bot calls Telegram's `getUpdates` API it passes an `offset` value. Telegram uses this as an acknowledgement cursor: once you pass `offset=N`, Telegram permanently marks all updates below N as seen and **never returns them again** — even if the bot restarts or the workflow re-runs.
+
+The current offset is saved to `.telegram_offset.json` after every run.
+
+### Layer 2 — Published IDs file (fallback)
+
+Every `channel:message_id` that was successfully uploaded to YouTube is written to `.published_ids.json`. If `.telegram_offset.json` is ever lost or reset, this file acts as a second check and skips any post whose ID is already in the list.
+
+---
+
+## State files
+
+| File | Purpose |
+|---|---|
+| `.telegram_offset.json` | Stores the `getUpdates` cursor per channel so Telegram never re-delivers old updates |
+| `.published_ids.json` | Stores every `channel:message_id` that was already uploaded (fallback guard) |
+
+Both files live in the **repo root**, same level as `short_creator.py`. They are committed to the repo so they persist across GitHub Actions runs.
+
+---
+
+## Setup — commit the state files to your repo
+
+Because GitHub Actions runners are ephemeral (wiped after every run), the state files must be **committed to the repository** so `actions/checkout` restores them on every run.
+
+### First-time setup
+
+```bash
+# In your local repo clone
+touch .published_ids.json .telegram_offset.json
+echo "[]" > .published_ids.json
+echo "{}" > .telegram_offset.json
+
+git add .published_ids.json .telegram_offset.json
+git commit -m "chore: add initial state files for duplicate prevention"
+git push
+```
+
+### How updates get saved back
+
+The workflow uses the **write-back pattern**: after `short_creator.py` runs it updates both files on disk. The final workflow step commits and pushes any changes back to the repo automatically, so the next run starts with the latest state.
+
+Make sure your workflow has **write permissions**. Go to:
+`Settings → Actions → General → Workflow permissions → Read and write permissions`
+
+---
+
+## Workflow file — `.github/workflows/shortcreator.yml`
+
+```yaml
+on:
+  schedule:
+    - cron: '0 */8 * * *'  # Every 8 hours
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # needed to push state files back
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install fonts
+        run: |
+          sudo apt-get install -y fonts-dejavu-core fonts-noto-color-emoji
+          pip install pilmoji
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+
+      - name: Install sys dependencies
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run automation
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHANNELS: ${{ secrets.TELEGRAM_CHANNELS }}
+          YOUTUBE_CLIENT_SECRETS: ${{ secrets.YOUTUBE_CLIENT_SECRETS }}
+        run: python short_creator.py
+
+      - name: Save state files back to repo
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .published_ids.json .telegram_offset.json
+          git diff --cached --quiet || git commit -m "chore: update state files [skip ci]"
+          git push
+```
+
+> The `[skip ci]` tag in the commit message prevents the push from triggering another workflow run.
+
+---
+
+## File structure
+
+```
+shortcreator/
+├── .github/
+│   └── workflows/
+│       └── shortcreator.yml
+├── .published_ids.json     ← committed, updated each run
+├── .telegram_offset.json   ← committed, updated each run
+├── README.md
+├── brand_logo.png
+├── requirements.txt
+└── short_creator.py
+```
+
+---
+
+## Resetting the state
+
+If you want to reprocess old posts (e.g. after a test), reset both files:
+
+```bash
+echo "[]" > .published_ids.json
+echo "{}" > .telegram_offset.json
+git add .published_ids.json .telegram_offset.json
+git commit -m "chore: reset duplicate prevention state"
+git push
+```
