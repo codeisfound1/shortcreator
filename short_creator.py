@@ -56,6 +56,7 @@ class Config:
     FONT_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     FONT_BOLD_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))
+    LOGO_PATH: str = "brand_logo.png"
 
 
 class TelegramClient:
@@ -112,6 +113,17 @@ class VideoCreator:
         self.music_cache.mkdir(exist_ok=True)
         self.fonts_dir = Path(__file__).parent / "fonts"
         self.fonts_dir.mkdir(exist_ok=True)
+        # Load brand logo once
+        self._logo: Optional[Image.Image] = None
+        if config.LOGO_PATH and Path(config.LOGO_PATH).exists():
+            try:
+                logo = Image.open(config.LOGO_PATH).convert("RGBA")
+                logo_size = 140  # px — fits top-right corner
+                logo.thumbnail((logo_size, logo_size), Image.LANCZOS)
+                self._logo = logo
+                logger.info(f"Logo loaded: {logo.size}")
+            except Exception as e:
+                logger.warning(f"Could not load logo: {e}")
 
     def download_music(self, url: str) -> Path:
         try:
@@ -240,6 +252,13 @@ class VideoCreator:
                 draw.text((x, y), clean_word, font=font_bold, fill=(255, 220, 0, 255))
 
             result = Image.alpha_composite(frame, overlay)
+            # Paste brand logo top-right with 20px margin
+            if self._logo is not None:
+                margin = 20
+                lw, lh = self._logo.size
+                lx = img_w - lw - margin
+                ly = margin
+                result.paste(self._logo, (lx, ly), self._logo)
             arr = np.array(result.convert("RGB"))
             return arr
 
