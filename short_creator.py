@@ -55,7 +55,7 @@ class Config:
 
     # Content
     DURATION: int = 15
-    MUSIC_OPTION: str = "CigSwaag-JinglePunks.mp3"
+    MUSIC_OPTION: str = "music.mp3"
     FONT_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     FONT_BOLD_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))
@@ -533,7 +533,7 @@ async def _main():
             PUBLISH_DELAY_HOURS=int(os.getenv("PUBLISH_DELAY_HOURS", 1)),
             BRAND_HASHTAGS=get_env_json("BRAND_HASHTAGS", '["cryptohieuqua", "cryptohieu.com"]'),
             DURATION=int(os.getenv("DURATION", 15)),
-            MUSIC_OPTION=os.getenv("MUSIC_OPTION", "CigSwaag-JinglePunks.mp3"),
+            MUSIC_OPTION=os.getenv("MUSIC_OPTION", "music.mp3"),
             FONT_PATH=os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
             FONT_BOLD_PATH=os.getenv("FONT_BOLD_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
         )
