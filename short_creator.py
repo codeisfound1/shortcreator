@@ -123,11 +123,10 @@ class TelegramClient:
                 if max_update_id is None or uid > max_update_id:
                     max_update_id = uid
 
-            # Walk newest-first to collect up to max_posts qualifying posts
-            for update in reversed(all_updates):
-                if len(results) >= max_posts:
-                    break
-
+            # Walk oldest-first (natural Telegram order), collect ALL qualifying
+            # photo posts, then trim to the newest max_posts entries.
+            candidates: List[Tuple[str, str, str]] = []
+            for update in all_updates:
                 post = update.get("channel_post") or update.get("message", {})
 
                 sender = post.get("sender_chat", {}).get("username", "none")
@@ -145,7 +144,6 @@ class TelegramClient:
                     message_id = str(post.get("message_id", update.get("update_id", "")))
                     unique_key = f"{channel}:{message_id}"
 
-                    # Fallback duplicate guard
                     if unique_key in published_ids:
                         logger.info(f"Skipping already-published post: {unique_key}")
                         continue
@@ -157,8 +155,12 @@ class TelegramClient:
                     file_path = file_resp["result"]["file_path"]
                     caption   = post.get("caption", "No caption")
                     image_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
-                    results.append((image_url, caption, unique_key))
-                    logger.info(f"Queued post {unique_key} (total queued: {len(results)})")
+                    candidates.append((image_url, caption, unique_key))
+                    logger.info(f"Found candidate {unique_key} (total: {len(candidates)})")
+
+            # Keep only the newest max_posts entries
+            results = candidates[-max_posts:] if len(candidates) > max_posts else candidates
+            logger.info(f"Returning {len(results)} post(s) from {len(candidates)} candidate(s)")
 
         except Exception as e:
             logger.error(f"Error fetching telegram content: {str(e)}")
@@ -738,6 +740,9 @@ async def _main(reset: bool = False):
 
         # -- Fetch up to MAX_POSTS latest posts from Telegram --
         posts: List[Tuple[str, str, str]] = []
+        # Offsets are stored here but only written to disk after a successful
+        # upload, so a failed video creation is retried on the next run.
+        pending_offsets: dict = {}
 
         for channel in config.TELEGRAM_CHANNELS:
             current_offset = offset_state.get(channel)
@@ -745,12 +750,9 @@ async def _main(reset: bool = False):
                 channel, published_ids, max_posts=config.MAX_POSTS,
                 offset=current_offset,
             )
-            # Always advance the cursor even if no qualifying posts were found,
-            # so we never re-process non-photo updates either.
             if next_offset is not None:
-                offset_state[channel] = next_offset
-                save_offset_state()
-                logger.info(f"Advanced getUpdates offset for {channel} -> {next_offset}")
+                pending_offsets[channel] = next_offset
+                logger.info(f"Pending offset for {channel} -> {next_offset} (saved after upload)")
 
             posts.extend(channel_posts)
             if len(posts) >= config.MAX_POSTS:
@@ -758,7 +760,14 @@ async def _main(reset: bool = False):
                 break
 
         if not posts:
-            logger.error("No new suitable content found (all recent posts already published or no photos)")
+            # No photo posts — safe to advance offset now (non-photo updates need no retry)
+            for ch, off in pending_offsets.items():
+                offset_state[ch] = off
+            save_offset_state()
+            logger.error(
+                "No new suitable content found — no unprocessed photo posts in the "
+                "Telegram window. Post new images to the channel and re-run."
+            )
             return
 
         logger.info(f"Found {len(posts)} new post(s) to process")
@@ -769,18 +778,28 @@ async def _main(reset: bool = False):
         # -- Process each post sequentially --
         creator = VideoCreator(config)
         uploader = YouTubeUploader(config.YOUTUBE_CLIENT_SECRETS)
+        processed = 0
 
         for index, (image_url, caption, unique_key) in enumerate(posts):
             logger.info(f"=== Processing post {index+1}/{len(posts)}: {unique_key} ===")
 
+            # Attempt video creation — retry once on failure
             video_path = await creator.create_short(image_url, caption, index=index)
             if not video_path or not video_path.exists():
-                logger.error(f"Video creation failed for post {index+1}, skipping upload")
+                logger.warning(f"Video creation failed for post {index+1}, retrying once...")
+                await asyncio.sleep(2)
+                video_path = await creator.create_short(image_url, caption, index=index)
+
+            if not video_path or not video_path.exists():
+                logger.error(
+                    f"Video creation failed twice for post {index+1} ({unique_key}). "
+                    f"Offset NOT advanced — this post will be retried on next run."
+                )
                 continue
 
             # Each video is scheduled 1 extra hour apart so they don't all go live at once
             publish_offset = config.PUBLISH_DELAY_HOURS + index
-            uploader.upload_short(
+            upload_result = uploader.upload_short(
                 video_path,
                 config,
                 caption=caption,
@@ -788,7 +807,16 @@ async def _main(reset: bool = False):
                 publish_delay_hours=publish_offset,
             )
 
-            # Mark as published immediately after successful upload
+            if upload_result is None:
+                logger.error(
+                    f"Upload failed for post {index+1} ({unique_key}). "
+                    f"Offset NOT advanced — this post will be retried on next run."
+                )
+                if video_path.exists():
+                    video_path.unlink()
+                continue
+
+            # SUCCESS — now safe to mark as published and advance offset
             published_ids.add(unique_key)
             try:
                 published_ids_file.write_text(json.dumps(list(published_ids)))
@@ -796,12 +824,19 @@ async def _main(reset: bool = False):
             except Exception as e:
                 logger.warning(f"Could not save published IDs: {e}")
 
-            # Cleanup video file
+            ch = unique_key.split(":")[0]
+            if ch in pending_offsets:
+                offset_state[ch] = pending_offsets[ch]
+                save_offset_state()
+                logger.info(f"Saved offset for {ch} -> {pending_offsets[ch]}")
+
             if video_path.exists():
                 video_path.unlink()
                 logger.info(f"Cleaned up {video_path}")
 
-        logger.info(f"Pipeline complete. Processed {len(posts)} video(s).")
+            processed += 1
+
+        logger.info(f"Pipeline complete. Successfully processed {processed}/{len(posts)} video(s).")
 
     except Exception as e:
         logger.exception("Fatal error in main process")
