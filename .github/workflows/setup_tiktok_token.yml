@@ -3,9 +3,6 @@ name: 🔑 Setup TikTok Tokens (Run Once)
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   get-tokens:
     runs-on: ubuntu-latest
@@ -25,6 +22,6 @@ jobs:
           TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
           TIKTOK_CODE:          ${{ secrets.TIKTOK_CODE }}
-          GITHUB_TOKEN:         ${{ secrets.GH_TOKEN }}
+          GH_TOKEN:             ${{ secrets.GH_TOKEN }}
           GITHUB_REPOSITORY:    ${{ github.repository }}
         run: python get_tiktok_tokens.py
