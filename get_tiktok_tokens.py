@@ -27,11 +27,32 @@ resp = requests.post(
 data = resp.json()
 
 if "access_token" in data:
-    print("\n✅ SUCCESS — save these values as GitHub Secrets:\n")
-    print(f"  TIKTOK_ACCESS_TOKEN  = {data['access_token']}")
-    print(f"  TIKTOK_REFRESH_TOKEN = {data['refresh_token']}")
-    print(f"  Expires in           = {data.get('expires_in')} seconds (~{data.get('expires_in', 0)//3600}h)")
-    print(f"  Open ID              = {data.get('open_id')}")
+    output = {
+        "TIKTOK_ACCESS_TOKEN": data["access_token"],
+        "TIKTOK_REFRESH_TOKEN": data.get("refresh_token"),
+        "expires_in": data.get("expires_in"),
+        "expires_in_hours": data.get("expires_in", 0) // 3600,
+        "open_id": data.get("open_id"),
+    }
+    # Optional: remove None values
+    output = {k: v for k, v in output.items() if v is not None}
+
+    filename = "tiktok_tokens.json"
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("\n❌ ERROR saving JSON:", e)
+        sys.exit(1)
+
+    print(f"\n✅ SUCCESS — saved tokens to {filename}\n")
+    print(f"  TIKTOK_ACCESS_TOKEN  = {output['TIKTOK_ACCESS_TOKEN']}")
+    if "TIKTOK_REFRESH_TOKEN" in output:
+        print(f"  TIKTOK_REFRESH_TOKEN = {output['TIKTOK_REFRESH_TOKEN']}")
+    if "expires_in" in output:
+        print(f"  Expires in           = {output['expires_in']} seconds (~{output['expires_in_hours']}h)")
+    if "open_id" in output:
+        print(f"  Open ID              = {output['open_id']}")
 else:
     print("\n❌ ERROR:")
     print(data)
