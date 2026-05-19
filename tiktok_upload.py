@@ -2,73 +2,92 @@
 tiktok_upload.py
 ────────────────
 Automatically upload a video to TikTok with:
+  - Secrets loaded strictly from environment variables (GitHub Secrets / CI)
   - Auto token refresh (tokens expire every 24h)
   - Chunked upload for large files
   - Upload status polling until TikTok finishes processing
-  - Saves tokens back to file so next run reuses them
+  - Saves refreshed tokens back to env-safe file for reuse within the same run
 
-Usage:
+Usage (local):
+    export TIKTOK_CLIENT_KEY=...
+    export TIKTOK_CLIENT_SECRET=...
+    export TIKTOK_ACCESS_TOKEN=...
+    export TIKTOK_REFRESH_TOKEN=...
+    export TIKTOK_OPEN_ID=...
     python tiktok_upload.py --video output_short.mp4 --title "Your caption #fyp"
 
-Or set env vars and call upload_to_tiktok() from short_creator.py
+GitHub Actions (add these as repository secrets):
+    TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET,
+    TIKTOK_ACCESS_TOKEN, TIKTOK_REFRESH_TOKEN, TIKTOK_OPEN_ID
 """
 
 import argparse
 import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
 
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CLIENT_KEY    = os.getenv("TIKTOK_CLIENT_KEY",    "YOUR_CLIENT_KEY")
-CLIENT_SECRET = os.getenv("TIKTOK_CLIENT_SECRET", "YOUR_CLIENT_SECRET")
-TOKENS_FILE   = "tiktok_tokens.json"   # auto-saved after each refresh
-
 CHUNK_SIZE    = 10 * 1024 * 1024       # 10 MB chunks (TikTok min: 5 MB, max: 64 MB)
 MAX_POLL      = 30                     # max status checks before giving up
 POLL_INTERVAL = 5                      # seconds between status checks
-
 PRIVACY       = "SELF_ONLY"            # sandbox safe; change to PUBLIC_TO_EVERYONE after review
+
+# Runtime token cache (in-memory, within one process lifetime)
+_token_cache: dict = {}
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Secret loading ────────────────────────────────────────────────────────────
+
+def _require_env(name: str) -> str:
+    """
+    Return the value of an environment variable.
+    Raises a clear error if it is missing or empty — no silent placeholder defaults.
+    """
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"Missing required secret: {name}\n"
+            f"  • Locally:  export {name}=<value>\n"
+            f"  • GitHub:   Settings → Secrets → Actions → New repository secret"
+        )
+    return value
+
+
+def load_secrets() -> dict:
+    """
+    Load all TikTok credentials from environment variables.
+    Must be set as GitHub Secrets (or local env vars for development).
+    """
+    return {
+        "client_key":     _require_env("TIKTOK_CLIENT_KEY"),
+        "client_secret":  _require_env("TIKTOK_CLIENT_SECRET"),
+        "access_token":   _require_env("TIKTOK_ACCESS_TOKEN"),
+        "refresh_token":  _require_env("TIKTOK_REFRESH_TOKEN"),
+        "open_id":        _require_env("TIKTOK_OPEN_ID"),
+    }
 
 
 # ── Token management ──────────────────────────────────────────────────────────
 
-def load_tokens() -> dict:
-    """Load tokens from file or environment variables."""
-    # Prefer file (updated by refresh) over env vars
-    if Path(TOKENS_FILE).exists():
-        with open(TOKENS_FILE) as f:
-            return json.load(f)
-    return {
-        "access_token":  os.getenv("TIKTOK_ACCESS_TOKEN", ""),
-        "refresh_token": os.getenv("TIKTOK_REFRESH_TOKEN", ""),
-        "open_id":       os.getenv("TIKTOK_OPEN_ID", ""),
-    }
-
-
-def save_tokens(tokens: dict):
-    """Persist tokens so next run doesn't need re-auth."""
-    with open(TOKENS_FILE, "w") as f:
-        json.dump(tokens, f, indent=2)
-    print(f"💾 Tokens saved to {TOKENS_FILE}")
-
-
-def refresh_access_token(refresh_token: str) -> dict:
+def refresh_access_token(client_key: str, client_secret: str, refresh_token: str) -> dict:
     """Exchange refresh_token for a new access_token."""
     print("🔄 Refreshing access token...")
     resp = requests.post(
         "https://open.tiktokapis.com/v2/oauth/token/",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         data={
-            "client_key":    CLIENT_KEY,
-            "client_secret": CLIENT_SECRET,
+            "client_key":    client_key,
+            "client_secret": client_secret,
             "grant_type":    "refresh_token",
             "refresh_token": refresh_token,
         },
+        timeout=30,
     )
     data = resp.json()
     if "access_token" not in data:
@@ -78,28 +97,40 @@ def refresh_access_token(refresh_token: str) -> dict:
 
 
 def get_valid_token() -> tuple[str, str]:
-    """Return (access_token, open_id), refreshing if needed."""
-    tokens = load_tokens()
-    access_token  = tokens.get("access_token", "")
-    refresh_token = tokens.get("refresh_token", "")
-    open_id       = tokens.get("open_id", "")
+    """
+    Return (access_token, open_id).
+    Validates the current token against the TikTok API and refreshes if expired.
+    Caches the result in memory for the duration of this process.
+    """
+    global _token_cache
 
-    if not access_token:
-        raise RuntimeError("No access_token found. Run get_tiktok_tokens.py first.")
+    if not _token_cache:
+        _token_cache = load_secrets()
 
-    # Check if token is still valid
+    access_token  = _token_cache["access_token"]
+    refresh_token = _token_cache["refresh_token"]
+    open_id       = _token_cache["open_id"]
+    client_key    = _token_cache["client_key"]
+    client_secret = _token_cache["client_secret"]
+
+    # Validate token with a lightweight API call
     resp = requests.get(
         "https://open.tiktokapis.com/v2/user/info/",
         headers={"Authorization": f"Bearer {access_token}"},
         params={"fields": "open_id"},
+        timeout=15,
     )
+
     if resp.status_code == 401:
-        # Token expired — refresh it
-        new_tokens = refresh_access_token(refresh_token)
-        tokens.update(new_tokens)
-        save_tokens(tokens)
-        access_token = tokens["access_token"]
-        open_id      = tokens.get("open_id", open_id)
+        # Token expired — refresh and update cache
+        new_tokens = refresh_access_token(client_key, client_secret, refresh_token)
+        _token_cache.update(new_tokens)
+        access_token = _token_cache["access_token"]
+        open_id      = _token_cache.get("open_id", open_id)
+        print(
+            "⚠️  Access token was refreshed. Update TIKTOK_ACCESS_TOKEN (and "
+            "TIKTOK_REFRESH_TOKEN if it changed) in your GitHub Secrets for the next run."
+        )
 
     return access_token, open_id
 
@@ -108,13 +139,13 @@ def get_valid_token() -> tuple[str, str]:
 
 def init_upload(access_token: str, video_path: str, title: str) -> tuple[str, str]:
     """
-    Tell TikTok we're about to upload. Returns (publish_id, upload_url).
-    Uses chunked upload if file > CHUNK_SIZE, direct POST otherwise.
+    Tell TikTok we're about to upload.
+    Returns (publish_id, upload_url).
     """
     file_size   = Path(video_path).stat().st_size
     chunk_count = math.ceil(file_size / CHUNK_SIZE)
 
-    print(f"📋 Initialising upload: {file_size/1024/1024:.1f} MB, {chunk_count} chunk(s)")
+    print(f"📋 Initialising upload: {file_size / 1024 / 1024:.1f} MB, {chunk_count} chunk(s)")
 
     resp = requests.post(
         "https://open.tiktokapis.com/v2/post/publish/video/init/",
@@ -124,7 +155,7 @@ def init_upload(access_token: str, video_path: str, title: str) -> tuple[str, st
         },
         json={
             "post_info": {
-                "title":           title[:150],   # TikTok max title length
+                "title":           title[:150],
                 "privacy_level":   PRIVACY,
                 "disable_duet":    False,
                 "disable_comment": False,
@@ -137,6 +168,7 @@ def init_upload(access_token: str, video_path: str, title: str) -> tuple[str, st
                 "total_chunk_count": chunk_count,
             },
         },
+        timeout=30,
     )
     data = resp.json()
     if resp.status_code != 200 or "data" not in data:
@@ -167,16 +199,18 @@ def upload_chunks(upload_url: str, video_path: str):
             resp = requests.put(
                 upload_url,
                 headers={
-                    "Content-Type":  "video/mp4",
-                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Type":   "video/mp4",
+                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
                     "Content-Length": str(len(chunk)),
                 },
                 data=chunk,
+                timeout=120,
             )
 
             if resp.status_code not in (200, 206):
-                raise RuntimeError(f"Chunk {chunk_num} upload failed: {resp.status_code} {resp.text}")
-
+                raise RuntimeError(
+                    f"Chunk {chunk_num + 1} upload failed: {resp.status_code} {resp.text}"
+                )
             chunk_num += 1
 
     print(f"✅ All {chunk_num} chunk(s) uploaded")
@@ -197,8 +231,9 @@ def poll_status(access_token: str, publish_id: str) -> str:
                 "Content-Type":  "application/json; charset=UTF-8",
             },
             json={"publish_id": publish_id},
+            timeout=15,
         )
-        data = resp.json()
+        data   = resp.json()
         status = data.get("data", {}).get("status", "UNKNOWN")
         print(f"  [{attempt}/{MAX_POLL}] Status: {status}")
 
@@ -211,7 +246,9 @@ def poll_status(access_token: str, publish_id: str) -> str:
 
         time.sleep(POLL_INTERVAL)
 
-    raise RuntimeError(f"Upload timed out after {MAX_POLL * POLL_INTERVAL}s. Check TikTok Studio manually.")
+    raise RuntimeError(
+        f"Upload timed out after {MAX_POLL * POLL_INTERVAL}s. Check TikTok Studio manually."
+    )
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -240,7 +277,15 @@ def upload_to_tiktok(video_path: str, title: str) -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Upload a video to TikTok")
     parser.add_argument("--video", required=True, help="Path to the .mp4 file")
-    parser.add_argument("--title", default="Auto-generated Short #fyp #shorts", help="Video caption/title")
+    parser.add_argument(
+        "--title",
+        default="Auto-generated Short #fyp #shorts",
+        help="Video caption/title",
+    )
     args = parser.parse_args()
 
-    upload_to_tiktok(args.video, args.title)
+    try:
+        upload_to_tiktok(args.video, args.title)
+    except RuntimeError as exc:
+        print(f"\n❌ Error: {exc}", file=sys.stderr)
+        sys.exit(1)
