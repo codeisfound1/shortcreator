@@ -23,5 +23,5 @@ jobs:
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
           TIKTOK_CODE:          ${{ secrets.TIKTOK_CODE }}
           GH_TOKEN:             ${{ secrets.GH_TOKEN }}
-          GITHUB_REPOSITORY:    ${{ github.repository }}
+          GH_REPO:              ${{ github.repository }}
         run: python get_tiktok_tokens.py
