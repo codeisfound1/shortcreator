@@ -24,4 +24,5 @@ jobs:
           TIKTOK_ACCESS_TOKEN:   ${{ secrets.TIKTOK_ACCESS_TOKEN }}
           TIKTOK_REFRESH_TOKEN:  ${{ secrets.TIKTOK_REFRESH_TOKEN }}
           TIKTOK_OPEN_ID:        ${{ secrets.TIKTOK_OPEN_ID }}
-        run: python tiktok_upload.py --video demo.mp4 --title "Demo #fyp"
+        run: |
+          python tiktok_upload.py --video demo.mp4 --title 'Demo #fyp'
