@@ -12,8 +12,8 @@ GitHub Secrets needed BEFORE running:
     TIKTOK_CLIENT_KEY     → your TikTok app client key
     TIKTOK_CLIENT_SECRET  → your TikTok app client secret
     TIKTOK_CODE           → the code= value from the browser redirect URL
-    GITHUB_TOKEN          → must have repo secrets write permission (Actions default token works)
-    GITHUB_REPOSITORY     → auto-set by GitHub Actions (e.g. "yourname/yourrepo")
+    GH_TOKEN          → must have repo secrets write permission (Actions default token works)
+    GH_REPO     → auto-set by GitHub Actions (e.g. "yourname/yourrepo")
 """
 
 import base64
@@ -30,8 +30,8 @@ CLIENT_SECRET = os.environ["TIKTOK_CLIENT_SECRET"]
 CODE          = os.environ["TIKTOK_CODE"]
 REDIRECT_URI  = "https://localhost/callback"
 
-GITHUB_TOKEN  = os.environ["GITHUB_TOKEN"]         # provided automatically by Actions
-GITHUB_REPO   = os.environ["GITHUB_REPOSITORY"]    # e.g. "yourname/shortcreator"
+GITHUB_TOKEN  = os.environ["GH_TOKEN"]         # provided automatically by Actions
+GITHUB_REPO   = os.environ["GH_REPO"]    # e.g. "yourname/shortcreator"
 # ─────────────────────────────────────────────────────────────────────────────
 
 
