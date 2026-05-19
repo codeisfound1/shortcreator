@@ -4,6 +4,8 @@ Usage: python get_tiktok_tokens.py
 """
 
 import requests
+import sys
+import json
 
 # ── Fill these in ──────────────────────────────────────────────
 CLIENT_KEY    = "sbawtfufg4q6a68j4z"
