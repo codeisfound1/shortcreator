@@ -8,7 +8,7 @@ import requests
 # ── Fill these in ──────────────────────────────────────────────
 CLIENT_KEY    = "sbawtfufg4q6a68j4z"
 CLIENT_SECRET = "dWi0TDfOnv1pxl68PHQdqGgBxmgrPM2N"
-CODE          = "bHZu2dhrmDKd_sTPa7fQSNhtBQ_voqXvX2UtkzyxbrO8VlKVPI_9A0Cl2Rgz2nvhnCoplfS0jubt9OdXkCzGHlMod5Mw7gq5stwZe0f13tcJB9rLWzNUNF8AGD5xRXZlL3-mwBeOU6ux_4r_tu4WeQlj2zWUwXEEksnj9bgn6fskHiMd6EiCawwwCnYXTrfY_zQ01odNy0w2n2DEciX-cz240_DPzpnx2xWAUQ%2Av%216167.s1"   # the code=... from the browser URL
+CODE          = "QnBrBH3ENBvItfST_TvO-iiXWnC5A1WMP5a_MkcIAgIzCezXEbqAf18CdCQkBmVTdsX9kB_d09occVdPfZ2ku8l9BkgkejXgV8iB1e1jpcysd2RsQa-IDkT2vXSvSLczpdFahteWOY0czB_FwpwQRyZPGkljq9TLs5RV9YlUUNfWBa6J-GcYsGl_TPKALuuQHXv6kokpzCv53zlA9TN-OMCdbSxtal9mgJjJRA%2Av%216210.s1"   # the code=... from the browser URL
 REDIRECT_URI  = "https://oauth.pstmn.io/v1/callback"
 # ───────────────────────────────────────────────────────────────
 
