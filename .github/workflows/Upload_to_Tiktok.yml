@@ -1,0 +1,27 @@
+name: Upload vid to TikTok
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-tokens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests PyNaCl
+
+      - name: Upload to TikTok
+        env:
+          TIKTOK_CLIENT_KEY:     ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET:  ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_ACCESS_TOKEN:   ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+          TIKTOK_REFRESH_TOKEN:  ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+          TIKTOK_OPEN_ID:        ${{ secrets.TIKTOK_OPEN_ID }}
+        run: python tiktok_upload.py --video demo.mp4 --title "Demo #fyp"
