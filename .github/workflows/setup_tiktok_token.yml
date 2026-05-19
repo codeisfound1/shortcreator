@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: read
-  secrets: write       # needed to push secrets back to GitHub
+  #secrets: write       # needed to push secrets back to GitHub
 
 jobs:
   get-tokens:
