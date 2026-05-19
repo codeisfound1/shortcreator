@@ -1,0 +1,31 @@
+name: 🔑 Setup TikTok Tokens (Run Once)
+
+on:
+  workflow_dispatch:   # manual trigger only — run this once to bootstrap tokens
+
+permissions:
+  contents: read
+  secrets: write       # needed to push secrets back to GitHub
+
+jobs:
+  get-tokens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests PyNaCl
+
+      - name: Exchange code for tokens & save to GitHub Secrets
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_CODE:          ${{ secrets.TIKTOK_CODE }}
+          GITHUB_TOKEN:         ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:    ${{ github.repository }}
+        run: python get_tiktok_tokens.py
