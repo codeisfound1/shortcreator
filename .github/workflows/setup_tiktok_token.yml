@@ -1,11 +1,10 @@
 name: 🔑 Setup TikTok Tokens (Run Once)
 
 on:
-  workflow_dispatch:   # manual trigger only — run this once to bootstrap tokens
+  workflow_dispatch:
 
 permissions:
   contents: read
-  #secrets: write       # needed to push secrets back to GitHub
 
 jobs:
   get-tokens:
