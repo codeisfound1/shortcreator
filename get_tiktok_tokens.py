@@ -28,7 +28,7 @@ from nacl import encoding, public  # PyNaCl — for encrypting secrets before se
 CLIENT_KEY    = os.environ["TIKTOK_CLIENT_KEY"]
 CLIENT_SECRET = os.environ["TIKTOK_CLIENT_SECRET"]
 CODE          = os.environ["TIKTOK_CODE"]
-REDIRECT_URI  = "https://localhost/callback"
+REDIRECT_URI  = "https://oauth.pstmn.io/v1/callback"
 
 GITHUB_TOKEN  = os.environ["GH_TOKEN"]         # provided automatically by Actions
 GITHUB_REPO   = os.environ["GH_REPO"]    # e.g. "yourname/shortcreator"
