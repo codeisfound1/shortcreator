@@ -71,7 +71,7 @@ class TelegramClient:
         self.session = requests.Session()
 
     def get_latest_images(
-        self, channel: str, published_ids: set, max_posts: int = 3
+        self, channel: str, published_ids: set, max_posts: int = 10
     ) -> List[Tuple[str, str, str]]:
         """Return a list of (image_url, caption, unique_key) for up to *max_posts*
         unprocessed photo posts from *channel*, newest-first."""
