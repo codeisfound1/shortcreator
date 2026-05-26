@@ -312,7 +312,7 @@ class VideoCreator:
     async def create_compiled_short(
         self,
         posts: List[Tuple[str, str, str]],
-    ) -> Optional[Path]:
+    ) -> Tuple[Optional[Path], List[str]]:
         """
         Build a single 9:16 vertical MP4 by compiling *posts* into a slide-show.
 
@@ -330,7 +330,7 @@ class VideoCreator:
 
         Returns
         -------
-        Path to the output MP4, or None on failure.
+        Tuple of (Path to the output MP4 or None on failure, list of all captions).
         """
         # Temp file paths
         tmp_tts_raw = Path("temp_tts.mp3")
@@ -543,7 +543,7 @@ class YouTubeUploader:
                 f"\n\n📌 {caption.strip()}" if caption and caption != "No caption" else ""
             )
             description = (
-                f"{config.DESCRIPTION}{caption_section}\n\n{hashtags}\n#Shorts\n\nxeonbit24.com"
+                f"{config.DESCRIPTION}{caption_section}\n\n{hashtags}\n#Shorts\n\ncryptohieu.com"
             )
 
             publish_at = (
