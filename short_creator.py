@@ -70,7 +70,7 @@ class Config:
     # The actual per-slide duration will be extended to fit TTS audio when present.
     SLIDE_DURATION: int = 5
     # Hard cap on total video length (seconds).  0 = no cap.
-    MAX_DURATION: int = 60
+    MAX_DURATION: int = 59
     MUSIC_OPTION: str = "music.mp3"
     FONT_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     FONT_BOLD_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
