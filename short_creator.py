@@ -616,7 +616,7 @@ async def _main():
             PUBLISH_DELAY_HOURS=int(os.getenv("PUBLISH_DELAY_HOURS", 1)),
             BRAND_HASHTAGS=get_env_json("BRAND_HASHTAGS", '["cryptohieuqua", "cryptohieu.com"]'),
             SLIDE_DURATION=int(os.getenv("SLIDE_DURATION", 5)),
-            MAX_DURATION=int(os.getenv("MAX_DURATION", 60)),
+            MAX_DURATION=int(os.getenv("MAX_DURATION", 59)),
             MUSIC_OPTION=os.getenv("MUSIC_OPTION", "music.mp3"),
             FONT_PATH=os.getenv(
                 "FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
