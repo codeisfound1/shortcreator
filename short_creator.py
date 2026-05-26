@@ -8,7 +8,7 @@ import requests
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -54,13 +54,14 @@ class Config:
     BRAND_HASHTAGS: List[str] = field(default_factory=lambda: ["cryptohieuqua", "cryptohieu.com"])
 
     # Content
-    DURATION: int = 15
+    DURATION: int = 15          # Minimum total video duration (seconds). Actual = max(this, tts_duration+1)
     MUSIC_OPTION: str = "music.mp3"
     FONT_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     FONT_BOLD_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))
+    OUTPUT_RESOLUTION: Tuple[int, int] = field(default_factory=lambda: (1080, 1920))  # 9:16 vertical
     LOGO_PATH: str = "brand_logo.png"
     PUBLISHED_IDS_FILE: str = ".published_ids.json"  # Tracks processed Telegram message IDs
+    SECONDS_PER_IMAGE: int = 5  # How long each image is shown in the compiled short
 
 
 class TelegramClient:
@@ -119,11 +120,6 @@ class TelegramClient:
         except Exception as e:
             logger.error(f"Error fetching telegram content: {str(e)}")
         return results
-
-    def get_latest_image(self, channel: str, published_ids: set) -> Optional[Tuple[str, str, str]]:
-        """Backward-compatible wrapper — returns only the single newest unprocessed photo post."""
-        results = self.get_latest_images(channel, published_ids, max_posts=1)
-        return results[0] if results else None
 
 
 class VideoCreator:
@@ -240,7 +236,6 @@ class VideoCreator:
             logger.error(f"TTS generation failed: {str(e)}")
             return None, []
 
-
     def _generate_caption_frame(self, highlight_word: str, img: Image.Image) -> np.ndarray:
         """Show only the current spoken word centered on screen"""
         try:
@@ -289,10 +284,10 @@ class VideoCreator:
                 draw.rounded_rectangle(
                     [bg_x0, bg_y0, bg_x1, bg_y1],
                     radius=corner_r,
-                    fill=(80, 80, 80, 160)   # grey, ~63 % opaque
+                    fill=(80, 80, 80, 160)   # grey, ~63% opaque
                 )
 
-                # Dark outline/border around text only (drawn at offsets in all directions)
+                # Dark outline/border around text only
                 outline_color = (0, 0, 0, 255)
                 outline_width = 6
                 for ox in range(-outline_width, outline_width + 1):
@@ -319,69 +314,120 @@ class VideoCreator:
 
     def _apply_zoom(self, img: Image.Image, progress: float) -> Image.Image:
         """Apply smooth zoom-in then zoom-out (Ken Burns effect).
-        progress: 0.0 → 1.0 over the full video duration.
+        progress: 0.0 → 1.0 over the image's own display slice.
         Zoom peaks at the midpoint, ranging from 1.0x to 1.15x scale.
         """
-        # Triangle wave: 0→1→0 mapped to zoom 1.0→1.15→1.0
-        t = 1.0 - abs(progress * 2 - 1.0)   # 0..1..0
+        t = 1.0 - abs(progress * 2 - 1.0)   # triangle wave 0..1..0
         zoom = 1.0 + 0.15 * t
 
         w, h = img.size
         new_w = int(w / zoom)
         new_h = int(h / zoom)
 
-        # Crop center
         left = (w - new_w) // 2
         top  = (h - new_h) // 2
         cropped = img.crop((left, top, left + new_w, top + new_h))
         return cropped.resize((w, h), Image.LANCZOS)
 
-    async def create_short(self, image_url: str, caption: str) -> Optional[Path]:
-        img_path = Path("temp_image.jpg")
-        tts_path = Path("temp_tts.mp3")
+    # ------------------------------------------------------------------
+    # NEW: compile multiple images into a single vertical MP4 short
+    # ------------------------------------------------------------------
+    async def create_short_from_images(
+        self,
+        posts: List[Tuple[str, str, str]],   # [(image_url, caption, unique_key), ...]
+    ) -> Optional[Path]:
+        """Download all images from *posts* and compile them into one 9:16 MP4.
+
+        Each image occupies SECONDS_PER_IMAGE seconds.  TTS narration is built
+        from the concatenation of all captions (joined by a pause marker) and
+        overlaid across the full video.  Background music loops for the whole
+        duration.  Only one MP4 is written to disk.
+        """
+        temp_files: List[Path] = []
+        tts_path     = Path("temp_tts.mp3")
         tts_fast_path = Path("temp_tts_fast.mp3")
+
         try:
-            # Download and process image
-            img_data = requests.get(image_url).content
-            img_path.write_bytes(img_data)
-            img = Image.open(img_path)
-            img = self._fit_image(img, self.config.OUTPUT_RESOLUTION)
-
-            # Generate TTS with word timings
-            tts_path, word_timings = await self._generate_tts(caption)
-            logger.info(f"Word timings received: {word_timings[:5]}")  # log first 5 words
-            tts_audio = None
-
-            if tts_path and tts_path.exists():
-                # Speed up TTS to x1.25
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", str(tts_path),
-                    "-filter:a", "atempo=1.25",
-                    str(tts_fast_path)
-                ], check=True, capture_output=True)
-                tts_audio = mp.AudioFileClip(str(tts_fast_path))
-
-                # Adjust word timings for x1.25 speed
-                #word_timings = [{
-                #    "word": w["word"],
-                #    "start": w["start"] / 1.25,
-                #    "duration": w["duration"] / 1.25
-                #} for w in word_timings]
-
-            tts_duration = tts_audio.duration if tts_audio else 0
-            video_duration = max(self.config.DURATION, tts_duration + 1.0)
-
-            # Generate frames with synced captions
             fps = 24
-            total_frames = int(video_duration * fps)
-            frames = []
+            seconds_per_img = self.config.SECONDS_PER_IMAGE
+            resolution = self.config.OUTPUT_RESOLUTION
 
-            logger.info(f"Generating {total_frames} synced caption frames...")
+            # ── 1. Download & pre-process every image ──────────────────
+            images: List[Image.Image] = []
+            valid_posts: List[Tuple[str, str, str]] = []
+
+            for idx, (image_url, caption, unique_key) in enumerate(posts):
+                tmp_img = Path(f"temp_image_{idx}.jpg")
+                temp_files.append(tmp_img)
+                try:
+                    img_data = requests.get(image_url, timeout=30).content
+                    tmp_img.write_bytes(img_data)
+                    img = Image.open(tmp_img).convert("RGB")
+                    img = self._fit_image(img, resolution)
+                    images.append(img)
+                    valid_posts.append((image_url, caption, unique_key))
+                    logger.info(f"Downloaded image {idx + 1}/{len(posts)}: {unique_key}")
+                except Exception as dl_err:
+                    logger.error(f"Skipping image {unique_key}: {dl_err}")
+
+            if not images:
+                logger.error("No images could be downloaded; aborting.")
+                return None
+
+            n_images       = len(images)
+            slice_frames   = int(seconds_per_img * fps)   # frames per image
+            total_frames   = slice_frames * n_images
+            video_duration = total_frames / fps            # seconds (before TTS extension)
+
+            logger.info(
+                f"Compiling {n_images} image(s) × {seconds_per_img}s "
+                f"= {video_duration:.1f}s at {fps} fps"
+            )
+
+            # ── 2. Build combined TTS from all captions ─────────────────
+            combined_caption = ". ".join(
+                cap for _, cap, _ in valid_posts
+                if cap and cap != "No caption"
+            )
+            word_timings: list = []
+            tts_audio          = None
+
+            if combined_caption:
+                tts_path, word_timings = await self._generate_tts(combined_caption)
+                temp_files.append(tts_path)
+
+                if tts_path and tts_path.exists():
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", str(tts_path),
+                        "-filter:a", "atempo=1.25",
+                        str(tts_fast_path)
+                    ], check=True, capture_output=True)
+                    temp_files.append(tts_fast_path)
+                    tts_audio = mp.AudioFileClip(str(tts_fast_path))
+
+            # Extend video if TTS is longer than the image slideshow
+            if tts_audio and tts_audio.duration + 1.0 > video_duration:
+                video_duration = tts_audio.duration + 1.0
+                total_frames   = int(video_duration * fps)
+                logger.info(f"Extended video duration to {video_duration:.1f}s to fit TTS")
+
+            # ── 3. Generate frames ──────────────────────────────────────
+            frames: List[np.ndarray] = []
+            logger.info(f"Generating {total_frames} frames …")
+
             for frame_idx in range(total_frames):
                 current_time = frame_idx / fps
-                progress = frame_idx / max(total_frames - 1, 1)
 
-                # Find current word being spoken
+                # Which image slice are we in?
+                img_slot     = min(int(frame_idx / slice_frames), n_images - 1)
+                # Progress within this image's slice (0.0 → 1.0) for Ken-Burns
+                slot_frame   = frame_idx - img_slot * slice_frames
+                slot_total   = slice_frames
+                slot_progress = slot_frame / max(slot_total - 1, 1)
+
+                base_img = images[img_slot]
+
+                # Current spoken word (global timeline)
                 current_word = ""
                 for timing in word_timings:
                     if timing["start"] <= current_time <= timing["start"] + timing["duration"]:
@@ -389,132 +435,140 @@ class VideoCreator:
                         break
 
                 try:
-                    zoomed_img = self._apply_zoom(img, progress)
-                    frame = self._generate_caption_frame(current_word, zoomed_img)
+                    zoomed = self._apply_zoom(base_img, slot_progress)
+                    frame  = self._generate_caption_frame(current_word, zoomed)
                     if frame is None:
                         raise ValueError("Frame is None")
                     frames.append(frame)
-                except Exception as e:
-                    logger.error(f"Frame {frame_idx} failed: {str(e)}")
-                    # Fallback: use plain image without caption
-                    frames.append(np.array(img.convert("RGB")))
+                except Exception as frame_err:
+                    logger.error(f"Frame {frame_idx} failed: {frame_err}")
+                    frames.append(np.array(base_img.convert("RGB")))
 
             if not frames:
-                logger.error("No frames generated")
+                logger.error("No frames generated.")
                 return None
-            logger.info(f"Generated {len(frames)} frames successfully")
 
-            # Create video from frames
+            logger.info(f"Generated {len(frames)} frames successfully.")
+
+            # ── 4. Assemble video clip ──────────────────────────────────
             video = mp.ImageSequenceClip(frames, fps=fps)
             video = video.fadein(0.5).fadeout(0.5)
 
-            # Mix background music + TTS
+            # ── 5. Mix background music + TTS ──────────────────────────
             if self.config.MUSIC_OPTION:
-                if self.config.MUSIC_OPTION.startswith("http"):
-                    music_path = self.download_music(self.config.MUSIC_OPTION)
+                music_src = self.config.MUSIC_OPTION
+                music_path = (
+                    self.download_music(music_src)
+                    if music_src.startswith("http")
+                    else Path(music_src)
+                )
+
+                if music_path.exists():
+                    bg_audio = mp.AudioFileClip(str(music_path))
+
+                    # Loop music to cover full duration
+                    if bg_audio.duration < video_duration:
+                        loops    = int(video_duration / bg_audio.duration) + 1
+                        bg_audio = mp.concatenate_audioclips([bg_audio] * loops)
+                    bg_audio = bg_audio.subclip(0, video_duration)
+                    bg_audio = bg_audio.audio_fadein(1.0).audio_fadeout(1.5)
+
+                    bg_volume = 0.3 if tts_audio else 0.8
+                    bg_audio  = bg_audio.volumex(bg_volume)
+
+                    final_audio = (
+                        mp.CompositeAudioClip([bg_audio, tts_audio.volumex(1.0)])
+                        if tts_audio else bg_audio
+                    )
+                    video = video.set_audio(final_audio)
                 else:
-                    music_path = Path(self.config.MUSIC_OPTION)
-
-                bg_audio = mp.AudioFileClip(str(music_path))
-
-                # Loop music if shorter than video duration
-                if bg_audio.duration < video_duration:
-                    loops = int(video_duration / bg_audio.duration) + 1
-                    bg_audio = mp.concatenate_audioclips([bg_audio] * loops)
-                bg_audio = bg_audio.subclip(0, video_duration)
-                bg_audio = bg_audio.audio_fadein(1.0).audio_fadeout(1.5)
-
-                # Lower bg music when TTS is present
-                bg_volume = 0.3 if tts_audio else 0.8
-                bg_audio = bg_audio.volumex(bg_volume)
-
-                if tts_audio:
-                    final_audio = mp.CompositeAudioClip([bg_audio, tts_audio.volumex(1.0)])
-                else:
-                    final_audio = bg_audio
-
-                video = video.set_audio(final_audio)
+                    logger.warning(f"Music file not found: {music_path}; skipping background music.")
+                    if tts_audio:
+                        video = video.set_audio(tts_audio)
             elif tts_audio:
                 video = video.set_audio(tts_audio)
 
-            # Save video
+            # ── 6. Write single output MP4 (9:16 vertical) ─────────────
             output_path = Path("output_short.mp4")
             video.write_videofile(
                 str(output_path),
                 fps=fps,
-                codec='libx264',
-                audio_codec='aac',
-                logger="bar"
+                codec="libx264",
+                audio_codec="aac",
+                logger="bar",
             )
+            logger.info(f"Short compiled → {output_path} ({video_duration:.1f}s, {n_images} images)")
             return output_path
 
         except Exception as e:
             logger.error(f"Video creation failed: {str(e)}")
             return None
         finally:
-            for f in [img_path, tts_path, tts_fast_path]:
-                if Path(f).exists():
-                    Path(f).unlink()
+            for f in temp_files:
+                try:
+                    if Path(f).exists():
+                        Path(f).unlink()
+                except Exception:
+                    pass
 
 
 class YouTubeUploader:
     def __init__(self, credentials: dict):
         self.credentials = credentials
 
-    def upload_short(self, video_path: Path, config: Config, caption: str = ""):
+    def upload_short(self, video_path: Path, config: Config, combined_caption: str = ""):
+        """Upload the single compiled short to YouTube."""
         try:
-            creds = Credentials.from_authorized_user_info(self.credentials)
+            creds   = Credentials.from_authorized_user_info(self.credentials)
             youtube = build("youtube", "v3", credentials=creds)
 
-            # Generate hashtags from caption words
+            # Generate hashtags from combined caption words
             caption_tags = [
                 word.strip("#.,!?").lower()
-                for word in caption.split()
+                for word in combined_caption.split()
                 if len(word.strip("#.,!?")) > 3
             ]
-            # Merge brand hashtags (always present) + caption tags
-            brand_tags = config.BRAND_HASHTAGS  # ["cryptohieuqua", "cryptohieu.com"]
-            all_tags = config.TAGS + brand_tags + caption_tags
+            brand_tags = config.BRAND_HASHTAGS
+            all_tags   = config.TAGS + brand_tags + caption_tags
 
-            # Build hashtag string: brand hashtags first, then top caption tags
-            brand_hashtag_str = " ".join(f"#{t}" for t in brand_tags)
+            brand_hashtag_str   = " ".join(f"#{t}" for t in brand_tags)
             caption_hashtag_str = " ".join(f"#{t}" for t in caption_tags[:5])
             hashtags = f"{brand_hashtag_str} {caption_hashtag_str}".strip()
 
-            # Title: "Video Short + caption + datetime"
             date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-            title = f"Video Short {caption[:50]} {date_str}"
+            title    = f"Video Short {combined_caption[:50]} {date_str}"
 
-            # Description: base description + original caption + hashtags
-            caption_section = f"\n\n📌 {caption.strip()}" if caption and caption != "No caption" else ""
-            description = f"{config.DESCRIPTION}{caption_section}\n\n{hashtags}\n#Shorts\n\ncryptohieu.com"
+            caption_section = (
+                f"\n\n📌 {combined_caption.strip()}"
+                if combined_caption and combined_caption != "No caption"
+                else ""
+            )
+            description = (
+                f"{config.DESCRIPTION}{caption_section}"
+                f"\n\n{hashtags}\n#Shorts\n\ncryptohieu.com"
+            )
 
             # Schedule publish time: now + PUBLISH_DELAY_HOURS
-            publish_at = (datetime.now(timezone.utc) + timedelta(hours=config.PUBLISH_DELAY_HOURS)).strftime(
-                "%Y-%m-%dT%H:%M:%S.000Z"
-            )
+            publish_at = (
+                datetime.now(timezone.utc) + timedelta(hours=config.PUBLISH_DELAY_HOURS)
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             logger.info(f"Scheduling publish at: {publish_at} UTC")
 
             body = {
                 "snippet": {
-                    "title": title,
+                    "title":       title,
                     "description": description,
-                    "tags": all_tags,
-                    "categoryId": "22"
+                    "tags":        all_tags,
+                    "categoryId":  "22"
                 },
                 "status": {
-                    "privacyStatus": "private",         # must be private for scheduled
-                    "publishAt": publish_at,             # schedule publish time
-                    "selfDeclaredMadeForKids": False
+                    "privacyStatus":            "private",  # required for scheduling
+                    "publishAt":                publish_at,
+                    "selfDeclaredMadeForKids":  False
                 }
             }
 
-            media = MediaFileUpload(
-                str(video_path),
-                chunksize=-1,
-                resumable=True
-            )
-
+            media = MediaFileUpload(str(video_path), chunksize=-1, resumable=True)
             request = youtube.videos().insert(
                 part=",".join(body.keys()),
                 body=body,
@@ -528,7 +582,9 @@ class YouTubeUploader:
                     logger.info(f"Uploaded {int(status.progress() * 100)}%")
 
             video_id = response["id"]
-            logger.info(f"Video uploaded: https://youtu.be/{video_id} (scheduled: {publish_at})")
+            logger.info(
+                f"Video uploaded: https://youtu.be/{video_id} (scheduled: {publish_at})"
+            )
 
             # Add video to target playlist
             if config.PLAYLIST_ID:
@@ -539,7 +595,7 @@ class YouTubeUploader:
                             "snippet": {
                                 "playlistId": config.PLAYLIST_ID,
                                 "resourceId": {
-                                    "kind": "youtube#video",
+                                    "kind":    "youtube#video",
                                     "videoId": video_id
                                 }
                             }
@@ -556,7 +612,7 @@ class YouTubeUploader:
 
 async def _main():
     try:
-        # Load configuration
+        # ── Load configuration ─────────────────────────────────────────
         config = Config(
             TELEGRAM_TOKEN=os.getenv("TELEGRAM_TOKEN"),
             TELEGRAM_CHANNELS=get_env_json("TELEGRAM_CHANNELS", '["@TechTalk66"]'),
@@ -571,7 +627,10 @@ async def _main():
             DURATION=int(os.getenv("DURATION", 15)),
             MUSIC_OPTION=os.getenv("MUSIC_OPTION", "music.mp3"),
             FONT_PATH=os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            FONT_BOLD_PATH=os.getenv("FONT_BOLD_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+            FONT_BOLD_PATH=os.getenv(
+                "FONT_BOLD_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            ),
+            SECONDS_PER_IMAGE=int(os.getenv("SECONDS_PER_IMAGE", 5)),
         )
 
         # Validate configuration
@@ -582,7 +641,7 @@ async def _main():
         if not config.TELEGRAM_CHANNELS:
             raise ValueError("At least one TELEGRAM_CHANNEL must be specified")
 
-        # Load published IDs for duplicate prevention
+        # ── Load published IDs for duplicate prevention ─────────────────
         published_ids_file = Path(config.PUBLISHED_IDS_FILE)
         published_ids: set = set()
         if published_ids_file.exists():
@@ -592,50 +651,60 @@ async def _main():
             except Exception as e:
                 logger.warning(f"Could not load published IDs: {e}")
 
-        # Fetch up to MAX_TELEGRAM_POSTS new photos from all configured Telegram channels
+        # ── Fetch images from all configured Telegram channels ──────────
         telegram = TelegramClient(config.TELEGRAM_TOKEN)
-        MAX_POSTS = int(os.getenv("MAX_TELEGRAM_POSTS", 5))
+        MAX_POSTS = int(os.getenv("MAX_TELEGRAM_POSTS", 10))
         all_posts: List[Tuple[str, str, str]] = []
+
         for channel in config.TELEGRAM_CHANNELS:
             posts = telegram.get_latest_images(channel, published_ids, max_posts=MAX_POSTS)
             all_posts.extend(posts)
             if len(all_posts) >= MAX_POSTS:
+                all_posts = all_posts[:MAX_POSTS]
                 break
 
         if not all_posts:
-            logger.error("No new suitable content found (all recent posts already published or no photos)")
+            logger.error(
+                "No new suitable content found "
+                "(all recent posts already published or no photos)"
+            )
             return
 
-        logger.info(f"Processing {len(all_posts)} new Telegram post(s)...")
-        creator = VideoCreator(config)
+        logger.info(
+            f"Collected {len(all_posts)} new Telegram image(s) — "
+            "compiling into a single short …"
+        )
+
+        # ── Compile ALL images into ONE short ───────────────────────────
+        creator    = VideoCreator(config)
+        video_path = await creator.create_short_from_images(all_posts)
+
+        if not video_path or not video_path.exists():
+            logger.error("Video compilation failed — nothing to upload.")
+            return
+
+        # ── Upload the single compiled short ────────────────────────────
+        combined_caption = " | ".join(
+            cap for _, cap, _ in all_posts if cap and cap != "No caption"
+        )
         uploader = YouTubeUploader(config.YOUTUBE_CLIENT_SECRETS)
+        uploader.upload_short(video_path, config, combined_caption=combined_caption)
 
-        for image_url, caption, unique_key in all_posts:
-            try:
-                logger.info(f"Creating video for post: {unique_key}")
-                video_path = await creator.create_short(image_url, caption)
-                if not video_path or not video_path.exists():
-                    logger.error(f"Video creation failed for {unique_key}, skipping")
-                    continue
+        # ── Mark ALL collected posts as published ───────────────────────
+        for _, _, unique_key in all_posts:
+            published_ids.add(unique_key)
+        try:
+            published_ids_file.write_text(json.dumps(list(published_ids)))
+            logger.info(f"Saved {len(all_posts)} published ID(s).")
+        except Exception as save_err:
+            logger.warning(f"Could not save published IDs: {save_err}")
 
-                uploader.upload_short(video_path, config, caption=caption)
+        # ── Clean up the temp video ─────────────────────────────────────
+        if video_path.exists():
+            video_path.unlink()
+            logger.info("Cleaned up temp video.")
 
-                # Mark as published immediately after a successful upload
-                published_ids.add(unique_key)
-                try:
-                    published_ids_file.write_text(json.dumps(list(published_ids)))
-                    logger.info(f"Saved published ID: {unique_key}")
-                except Exception as save_err:
-                    logger.warning(f"Could not save published IDs: {save_err}")
-
-                if video_path.exists():
-                    video_path.unlink()
-                    logger.info(f"Cleaned up temp video for {unique_key}")
-
-            except Exception as post_err:
-                logger.error(f"Error processing post {unique_key}: {post_err}")
-
-    except Exception as e:
+    except Exception:
         logger.exception("Fatal error in main process")
         sys.exit(1)
 
