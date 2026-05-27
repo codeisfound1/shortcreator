@@ -527,17 +527,44 @@ class YouTubeUploader:
             if all_captions is None:
                 all_captions = [caption] if caption else []
 
+            import re as _re
+
+            def sanitize_tag(t: str) -> str:
+                """Strip to ASCII-safe alphanumeric + spaces, max 30 chars."""
+                t = t.strip("#.,!?:;\"'()[]{}").strip()
+                # Remove characters YouTube rejects (keep letters, digits, spaces)
+                t = _re.sub(r"[^\w\s]", "", t, flags=_re.UNICODE)
+                t = t.strip()
+                return t[:30] if t else ""
+
             # Extract tags from ALL captions
             caption_tags = []
-            seen_tags = set()
+            seen_tags: set = set()
             for cap in all_captions:
                 for word in cap.split():
-                    clean = word.strip("#.,!?").lower()
-                    if len(clean) > 3 and clean not in seen_tags:
+                    clean = sanitize_tag(word.lower())
+                    if len(clean) > 2 and clean not in seen_tags:
                         caption_tags.append(clean)
                         seen_tags.add(clean)
-            brand_tags = config.BRAND_HASHTAGS
-            all_tags = config.TAGS + brand_tags + caption_tags
+
+            brand_tags = [sanitize_tag(t) for t in config.BRAND_HASHTAGS]
+            brand_tags = [t for t in brand_tags if t]
+            base_tags  = [sanitize_tag(t) for t in config.TAGS]
+            base_tags  = [t for t in base_tags if t]
+
+            # Deduplicate and cap: YouTube allows max 500 chars total across all tags
+            raw_tags = base_tags + brand_tags + caption_tags
+            all_tags: List[str] = []
+            seen_final: set = set()
+            total_chars = 0
+            for t in raw_tags:
+                if t in seen_final:
+                    continue
+                if total_chars + len(t) + 1 > 500:
+                    break
+                all_tags.append(t)
+                seen_final.add(t)
+                total_chars += len(t) + 1
 
             brand_hashtag_str = " ".join(f"#{t}" for t in brand_tags)
             caption_hashtag_str = " ".join(f"#{t}" for t in caption_tags[:10])
