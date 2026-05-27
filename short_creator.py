@@ -685,10 +685,10 @@ async def _main():
         # Load published IDs
         # ----------------------------------------------------------------
         published_ids_file = Path(config.PUBLISHED_IDS_FILE)
-        published_ids: set = set()
+        published_ids: list = []
         if published_ids_file.exists():
             try:
-                published_ids = set(json.loads(published_ids_file.read_text()))
+                published_ids = json.loads(published_ids_file.read_text())
                 logger.info(f"Loaded {len(published_ids)} published IDs")
             except Exception as e:
                 logger.warning(f"Could not load published IDs: {e}")
@@ -744,9 +744,17 @@ async def _main():
         # ----------------------------------------------------------------
         if upload_result:
             for _, _, unique_key in all_posts:
-                published_ids.add(unique_key)
+                if unique_key not in published_ids:
+                    published_ids.append(unique_key)
+            MAX_PUBLISHED_IDS = 30
+            pruned_ids = published_ids
+            if len(published_ids) > MAX_PUBLISHED_IDS:
+                pruned_ids = published_ids[-MAX_PUBLISHED_IDS:]
+                logger.info(
+                    f"Pruned published IDs from {len(published_ids)} → {MAX_PUBLISHED_IDS}."
+                )
             try:
-                published_ids_file.write_text(json.dumps(list(published_ids)))
+                published_ids_file.write_text(json.dumps(pruned_ids))
                 logger.info(f"Saved {len(all_posts)} new published ID(s).")
             except Exception as save_err:
                 logger.warning(f"Could not save published IDs: {save_err}")
