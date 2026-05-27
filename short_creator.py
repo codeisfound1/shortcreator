@@ -312,7 +312,7 @@ class VideoCreator:
     async def create_compiled_short(
         self,
         posts: List[Tuple[str, str, str]],
-    ) -> Tuple[Optional[Path], List[str]]:
+    ) -> Tuple[Optional[Path], List[str]]:  # (video_path, all_captions)
         """
         Build a single 9:16 vertical MP4 by compiling *posts* into a slide-show.
 
@@ -431,7 +431,7 @@ class VideoCreator:
 
             if not slide_clips:
                 logger.error("No slides rendered; cannot produce output video.")
-                return None
+                return None, []
 
             # ------------------------------------------------------------------
             # 4. Concatenate slides into one video
@@ -500,11 +500,11 @@ class VideoCreator:
                 logger="bar",
             )
             logger.info(f"Compiled short saved: {output_path}")
-            return output_path
+            return output_path, all_captions
 
         except Exception as e:
             logger.error(f"Compiled short creation failed: {str(e)}")
-            return None
+            return None, []
         finally:
             # Clean up any stray temp files
             for p in [tmp_tts_raw, tmp_tts_fast]:
@@ -519,29 +519,41 @@ class YouTubeUploader:
     def __init__(self, credentials: dict):
         self.credentials = credentials
 
-    def upload_short(self, video_path: Path, config: Config, caption: str = ""):
+    def upload_short(self, video_path: Path, config: Config, caption: str = "", all_captions: List[str] = None):
         try:
             creds = Credentials.from_authorized_user_info(self.credentials)
             youtube = build("youtube", "v3", credentials=creds)
 
-            caption_tags = [
-                word.strip("#.,!?").lower()
-                for word in caption.split()
-                if len(word.strip("#.,!?")) > 3
-            ]
+            if all_captions is None:
+                all_captions = [caption] if caption else []
+
+            # Extract tags from ALL captions
+            caption_tags = []
+            seen_tags = set()
+            for cap in all_captions:
+                for word in cap.split():
+                    clean = word.strip("#.,!?").lower()
+                    if len(clean) > 3 and clean not in seen_tags:
+                        caption_tags.append(clean)
+                        seen_tags.add(clean)
             brand_tags = config.BRAND_HASHTAGS
             all_tags = config.TAGS + brand_tags + caption_tags
 
             brand_hashtag_str = " ".join(f"#{t}" for t in brand_tags)
-            caption_hashtag_str = " ".join(f"#{t}" for t in caption_tags[:5])
+            caption_hashtag_str = " ".join(f"#{t}" for t in caption_tags[:10])
             hashtags = f"{brand_hashtag_str} {caption_hashtag_str}".strip()
 
             date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-            title = f"Video Short {caption[:50]} {date_str}"
+            primary_cap = all_captions[0] if all_captions else caption
+            title = f"Video Short {primary_cap[:50]} {date_str}"
 
-            caption_section = (
-                f"\n\n📌 {caption.strip()}" if caption and caption != "No caption" else ""
+            # Build description with all captions
+            caption_lines = "\n".join(
+                f"📌 {cap.strip()}"
+                for cap in all_captions
+                if cap and cap != "No caption"
             )
+            caption_section = f"\n\n{caption_lines}" if caption_lines else ""
             description = (
                 f"{config.DESCRIPTION}{caption_section}\n\n{hashtags}\n#Shorts\n\ncryptohieu.com"
             )
@@ -677,7 +689,7 @@ async def _main():
         # Use the first post's caption as the YouTube title/description seed
         primary_caption = all_posts[0][1] if all_posts else ""
 
-        video_path = await creator.create_compiled_short(all_posts)
+        video_path, all_captions = await creator.create_compiled_short(all_posts)
 
         if not video_path or not video_path.exists():
             logger.error("Compiled video creation failed — nothing to upload.")
@@ -687,7 +699,7 @@ async def _main():
         # Upload the ONE video to YouTube
         # ----------------------------------------------------------------
         uploader = YouTubeUploader(config.YOUTUBE_CLIENT_SECRETS)
-        uploader.upload_short(video_path, config, caption=primary_caption)
+        uploader.upload_short(video_path, config, caption=primary_caption, all_captions=all_captions)
 
         # ----------------------------------------------------------------
         # Mark ALL processed posts as published
