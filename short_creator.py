@@ -635,7 +635,16 @@ class YouTubeUploader:
 
             return response
         except Exception as e:
-            logger.error(f"Upload failed: {str(e)}")
+            err_str = str(e)
+            if "rateLimitExceeded" in err_str or "Video Uploads per day" in err_str:
+                logger.error(
+                    "YouTube daily upload quota exceeded. "
+                    "Quota resets at midnight Pacific Time. "
+                    "To increase limits: console.cloud.google.com → "
+                    "APIs & Services → YouTube Data API v3 → Quotas."
+                )
+                raise SystemExit(1)
+            logger.error(f"Upload failed: {err_str}")
 
 
 # ---------------------------------------------------------------------------
@@ -726,19 +735,23 @@ async def _main():
         # Upload the ONE video to YouTube
         # ----------------------------------------------------------------
         uploader = YouTubeUploader(config.YOUTUBE_CLIENT_SECRETS)
-        uploader.upload_short(video_path, config, caption=primary_caption, all_captions=all_captions)
+        upload_result = uploader.upload_short(
+            video_path, config, caption=primary_caption, all_captions=all_captions
+        )
 
         # ----------------------------------------------------------------
-        # Mark ALL processed posts as published
+        # Mark ALL processed posts as published ONLY on success
         # ----------------------------------------------------------------
-        for _, _, unique_key in all_posts:
-            published_ids.add(unique_key)
-
-        try:
-            published_ids_file.write_text(json.dumps(list(published_ids)))
-            logger.info(f"Saved {len(all_posts)} new published ID(s).")
-        except Exception as save_err:
-            logger.warning(f"Could not save published IDs: {save_err}")
+        if upload_result:
+            for _, _, unique_key in all_posts:
+                published_ids.add(unique_key)
+            try:
+                published_ids_file.write_text(json.dumps(list(published_ids)))
+                logger.info(f"Saved {len(all_posts)} new published ID(s).")
+            except Exception as save_err:
+                logger.warning(f"Could not save published IDs: {save_err}")
+        else:
+            logger.warning("Upload did not succeed — published IDs NOT saved; posts will retry next run.")
 
         # Clean up output video
         if video_path.exists():
