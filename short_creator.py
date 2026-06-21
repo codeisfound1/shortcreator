@@ -18,7 +18,7 @@ from typing import List, Optional, Tuple, Union
 
 import moviepy.editor as mp
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -193,6 +193,57 @@ class VideoCreator:
         top = (nh - th) // 2
         return img.crop((left, top, left + tw, top + th))
 
+    def _needs_pillarbox(self, img: Image.Image, target_size: tuple) -> bool:
+        """True if the image's aspect ratio deviates >15% from the target (9:16)."""
+        tw, th = target_size
+        target_ratio = tw / th
+        img_ratio = img.size[0] / img.size[1]
+        return abs(img_ratio - target_ratio) / target_ratio > 0.15
+
+    def _prepare_pillarbox_layers(self, img: Image.Image, target_size: tuple) -> Tuple[Image.Image, Image.Image]:
+        """
+        For non-9:16 images: build (foreground, background) layers.
+          • background = full-bleed cover crop, heavily blurred (computed once, small
+            cost) — later animated with a cheap crop-zoom (no per-frame re-blur).
+          • foreground = the whole image, letterboxed/pillarboxed (object-fit: contain)
+            onto a transparent canvas, centred.
+        Returns (foreground_rgba, background_rgb) both at target_size.
+        """
+        tw, th = target_size
+
+        # Background: cover-crop + blur, slightly oversized so we can crop-zoom it
+        # later (1.05 -> 1.0) without revealing edges.
+        oversize = (int(tw * 1.08), int(th * 1.08))
+        bg = self._fit_image(img, oversize)
+        # Downscale before blurring (cheaper), then blur, then resize back up.
+        small = bg.resize((max(oversize[0] // 4, 1), max(oversize[1] // 4, 1)), Image.BILINEAR)
+        small = small.filter(ImageFilter.GaussianBlur(radius=8))
+        bg = small.resize(oversize, Image.BILINEAR).convert("RGB")
+
+        # Foreground: contain-fit, centred, transparent padding
+        ow, oh = img.size
+        scale = min(tw / ow, th / oh)
+        nw, nh = max(int(ow * scale), 1), max(int(oh * scale), 1)
+        fg_resized = img.convert("RGBA").resize((nw, nh), Image.LANCZOS)
+        fg_canvas = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        fg_canvas.paste(fg_resized, ((tw - nw) // 2, (th - nh) // 2), fg_resized)
+
+        return fg_canvas, bg
+
+    def _animate_pillarbox_bg(self, bg_oversized: Image.Image, target_size: tuple, progress: float) -> Image.Image:
+        """Cheap zoom 1.05 -> 1.0 on the pre-blurred background via crop (no re-blur)."""
+        tw, th = target_size
+        ow, oh = bg_oversized.size
+        # progress 0 -> 1 over the slide; ease so it settles near the start
+        t = min(progress * 2.0, 1.0)
+        zoom = 1.05 - 0.05 * t  # starts slightly zoomed-in, settles to 1.0
+        cw, ch = int(tw * zoom), int(th * zoom)
+        cw, ch = min(cw, ow), min(ch, oh)
+        left = (ow - cw) // 2
+        top = (oh - ch) // 2
+        cropped = bg_oversized.crop((left, top, left + cw, top + ch))
+        return cropped.resize((tw, th), Image.BILINEAR)
+
     def _apply_zoom(self, img: Image.Image, progress: float) -> Image.Image:
         """Ken Burns zoom-in then zoom-out.  progress: 0.0 → 1.0."""
         t = 1.0 - abs(progress * 2 - 1.0)
@@ -202,6 +253,21 @@ class VideoCreator:
         left = (w - nw) // 2
         top = (h - nh) // 2
         return img.crop((left, top, left + nw, top + nh)).resize((w, h), Image.LANCZOS)
+
+    def _apply_zoom_inplace(self, fg_rgba: Image.Image, progress: float) -> Image.Image:
+        """
+        Gentle Ken Burns for a pillarboxed foreground: scales the photo content
+        slightly (1.0 -> 1.08) around its own centre, staying within the same
+        canvas size, so transparent padding is preserved (no edges revealed).
+        """
+        t = 1.0 - abs(progress * 2 - 1.0)
+        zoom = 1.0 + 0.08 * t
+        w, h = fg_rgba.size
+        nw, nh = int(w * zoom), int(h * zoom)
+        scaled = fg_rgba.resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        canvas.paste(scaled, ((w - nw) // 2, (h - nh) // 2), scaled)
+        return canvas
 
     async def _generate_tts(self, text: str) -> Tuple[Optional[Path], list]:
         """Generate TTS audio + word timings for *text*.  Returns (path, timings)."""
@@ -358,8 +424,18 @@ class VideoCreator:
                     img_data = requests.get(image_url, timeout=30).content
                     tmp_img = Path(f"temp_slide_{slide_idx}.jpg")
                     tmp_img.write_bytes(img_data)
-                    img = Image.open(tmp_img)
-                    img = self._fit_image(img, self.config.OUTPUT_RESOLUTION)
+                    raw_img = Image.open(tmp_img)
+
+                    is_pillarboxed = self._needs_pillarbox(raw_img, self.config.OUTPUT_RESOLUTION)
+                    if is_pillarboxed:
+                        # Off-ratio photo (landscape/near-square): blurred bg fill +
+                        # contain-fit foreground, instead of a hard crop.
+                        fg_layer, bg_layer = self._prepare_pillarbox_layers(raw_img, self.config.OUTPUT_RESOLUTION)
+                        img = None  # unused in this branch
+                    else:
+                        img = self._fit_image(raw_img, self.config.OUTPUT_RESOLUTION)
+                        fg_layer = bg_layer = None
+
                     tmp_img.unlink(missing_ok=True)
                 except Exception as e:
                     logger.error(f"Could not download/process image for {unique_key}: {e}")
@@ -407,11 +483,20 @@ class VideoCreator:
                             break
 
                     try:
-                        zoomed = self._apply_zoom(img, progress)
-                        frame = self._generate_caption_frame(current_word, zoomed)
+                        if is_pillarboxed:
+                            animated_bg = self._animate_pillarbox_bg(
+                                bg_layer, self.config.OUTPUT_RESOLUTION, progress
+                            ).convert("RGBA")
+                            zoomed_fg = self._apply_zoom_inplace(fg_layer, progress)
+                            composed = Image.alpha_composite(animated_bg, zoomed_fg)
+                            frame = self._generate_caption_frame(current_word, composed.convert("RGB"))
+                        else:
+                            zoomed = self._apply_zoom(img, progress)
+                            frame = self._generate_caption_frame(current_word, zoomed)
                     except Exception as fe:
                         logger.warning(f"Frame {frame_idx} error: {fe}")
-                        frame = np.array(img.convert("RGB"))
+                        fallback = img if img is not None else fg_layer.convert("RGB")
+                        frame = np.array(fallback)
                     frames.append(frame)
 
                 if not frames:
