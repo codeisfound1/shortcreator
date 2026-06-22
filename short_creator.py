@@ -97,6 +97,7 @@ class TelegramClient:
         """Return a list of (image_url, caption, unique_key) for up to *max_posts*
         unprocessed photo posts from *channel*, newest-first."""
         results: List[Tuple[str, str, str]] = []
+        seen_captions_local: set = set()
         try:
             url = f'{self.base_url}getUpdates?allowed_updates=["channel_post","message"]'
             updates = self.session.get(url).json()
@@ -133,6 +134,11 @@ class TelegramClient:
                         ).json()
                         file_path = file_resp["result"]["file_path"]
                         caption = post.get("caption", "No caption")
+                        norm_caption = " ".join(caption.lower().split()) if caption else ""
+                        if norm_caption in seen_captions_local:
+                            logger.info(f"Skipping album duplicate caption for {unique_key}")
+                            continue
+                        seen_captions_local.add(norm_caption)
                         results.append((
                             f"https://api.telegram.org/file/bot{self.token}/{file_path}",
                             caption,
@@ -793,6 +799,28 @@ async def _main():
         for channel in config.TELEGRAM_CHANNELS:
             posts = telegram.get_latest_images(channel, published_ids, max_posts=max_per_channel)
             all_posts.extend(posts)
+
+        # ------------------------------------------------------------------
+        # Dedup: drop posts whose caption (normalised) has already been seen.
+        # This catches cross-channel reposts and Telegram album duplicates.
+        # ------------------------------------------------------------------
+        seen_captions: set = set()
+        deduped_posts: List[Tuple[str, str, str]] = []
+        for post in all_posts:
+            _, caption, unique_key = post
+            norm = " ".join(caption.lower().split()) if caption else ""
+            if norm in seen_captions:
+                logger.info(f"Skipping duplicate caption post: {unique_key}")
+                continue
+            seen_captions.add(norm)
+            deduped_posts.append(post)
+
+        if len(deduped_posts) < len(all_posts):
+            logger.info(
+                f"Deduped {len(all_posts)} → {len(deduped_posts)} posts "
+                f"({len(all_posts) - len(deduped_posts)} duplicate caption(s) removed)."
+            )
+        all_posts = deduped_posts
 
         if not all_posts:
             logger.error(
