@@ -295,7 +295,7 @@ class VideoCreator:
             tts_path = Path("temp_tts.mp3")
             word_timings = []
             clean_text = strip_hashtags(strip_emojis(text))
-            subscribe_cta = "Tin tiếp theo sau đây sẽ rất thú vị, hãy đăng ký kênh để xem được tin mới nhất! Yêu các bạn"
+            subscribe_cta = "Bạn nghĩ sao? Comment bên dưới, hãy like đăng ký kênh để xem được tin mới nhất! Yêu các bạn"
             text_with_cta = f"{clean_text}. {subscribe_cta}"
 
             communicate = edge_tts.Communicate(text_with_cta, voice="vi-VN-HoaiMyNeural")
