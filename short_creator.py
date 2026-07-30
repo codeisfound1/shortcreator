@@ -793,7 +793,7 @@ async def _main():
         # Gather ALL new Telegram photos from ALL channels → one list
         # ----------------------------------------------------------------
         telegram = TelegramClient(config.TELEGRAM_TOKEN)
-        max_per_channel = int(os.getenv("MAX_TELEGRAM_POSTS", 3))
+        max_per_channel = int(os.getenv("MAX_TELEGRAM_POSTS", 2))
         all_posts: List[Tuple[str, str, str]] = []
 
         for channel in config.TELEGRAM_CHANNELS:
